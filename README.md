@@ -60,7 +60,7 @@ docker compose logs -f
 
 远程部署时，在 `.env` 中设置 `PUBLIC_BASE_URL=https://你的域名`、`COOKIE_SECURE=true`，并用反向代理转发到 8000 端口；本地 HTTP 使用 `COOKIE_SECURE=false`。如果直接对外监听，可设置 `BIND_ADDRESS=0.0.0.0`。`PUBLIC_BASE_URL` 是生成订阅链接使用的地址，不能继续保留 localhost。
 
-使用 GHCR 镜像时，设置 `GHELPER_IMAGE=ghcr.io/<owner>/<repo>:latest`：
+使用 GHCR 镜像时，设置 `GHELPER_IMAGE=ghcr.io/<owner>/<repo>:V1.0`（版本号取自仓库根目录的 `VERSION` 文件，同时也会发布 `latest` 与 `sha-<commit>`）：
 
 ```sh
 docker compose pull
@@ -210,6 +210,8 @@ npm --prefix frontend run test:e2e
 Linux CI 使用 Playwright Chromium。执行 `python scripts/validate_mihomo.py --download` 可下载固定版本 v1.19.33 的官方 mihomo 并校验生成配置（首次运行还需下载 GeoIP 数据）；该检查已接入 CI。测试覆盖 token 轮换与清除、缓存有效期、配置生成、鉴权、订阅撤销、LevelDB 日志/表文件、浏览器流程和响应式布局。
 
 GitHub Actions 工作流包含 Windows/Linux 的 Python 3.12/3.14 测试、前端构建与浏览器测试、镜像启动与数据卷持久化测试，然后构建 amd64/arm64 镜像。PR 仅构建，主分支和 `v*` 标签自动发布，支持手动触发。GitHub Actions 和上游解析库使用固定提交。
+
+镜像版本号自定义，写在仓库根目录的 `VERSION`（当前 `V1.0`）：主分支构建时除了 `latest` 和 `sha-<commit>`，还会打上 `VERSION` 里的标签。发版流程是改 `VERSION` 后提交推送，不要在工作流里硬编码版本。
 
 推送项目到 GitHub 后启用 Actions，镜像名称自动取 `ghcr.io/<owner>/<repo>`，不需要手填 Docker Hub 凭据。如果仓库组织策略限制 Packages 写入，需要管理员允许工作流使用 `packages: write`。GHCR 私有包拉取需要认证，公开使用可在包设置中调整可见性。
 
