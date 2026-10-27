@@ -332,6 +332,52 @@ async def test_export_filters_by_max_latency(settings):
 
 
 @pytest.mark.asyncio
+async def test_export_limits_nodes_per_country(settings):
+    service = create_app(settings).state.service
+    await service.gateway.close()
+    service.gateway = FakeGateway()
+    latencies = {"us1": 80.0, "us2": 20.0, "us3": 50.0, "jp1": 60.0, "hk1": 30.0}
+
+    async def probe(proxy):
+        return True, latencies[proxy["server"].split(".")[0]], "tcp"
+
+    service._probe_proxy = probe
+    source_id = add_source(service, [
+        {"name": name, "type": "trojan", "server": f"{key}.example.com", "port": 443, "password": "x"}
+        for key, name in (("us1", "🇺🇸 美国 01"), ("us2", "🇺🇸 洛杉矶 02"), ("us3", "US-03"),
+                          ("jp1", "🇯🇵 东京 01"), ("hk1", "🇭🇰 香港 01"))])
+    kept, _ = await service.export_proxies([], [source_id], max_per_country=1)
+    # 同一国家（美国入口名不同）只留延迟最低的一个，其他国家互不影响
+    assert [p["server"] for p in kept] == ["us2.example.com", "jp1.example.com", "hk1.example.com"]
+
+    wider, _ = await service.export_proxies([], [source_id], max_per_country=2)
+    assert [p["server"] for p in wider] == ["us2.example.com", "us3.example.com",
+                                            "jp1.example.com", "hk1.example.com"]
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_country_limit_ranks_unknown_last_and_counts_deduped_nodes_once(settings):
+    service = create_app(settings).state.service
+
+    def row(name, server, latency, country="US"):
+        return {"proxy": {"name": name, "type": "trojan", "server": server, "port": 443,
+                          "password": "x"},
+                "country": country, "reachable": None, "latency": latency, "tested_at": None}
+
+    rows = [row("慢", "slow.example.com", 300.0), row("未知", "unknown.example.com", None),
+            row("快", "fast.example.com", 100.0), row("快·别名", "fast.example.com", 100.0),
+            row("日本", "jp.example.com", None, country="JP")]
+    kept = service._limit_per_country(rows, 2)
+    # 未测出延迟的排已知之后；同一节点只占一个名额，但每个分组里的引用都保留
+    assert [r["proxy"]["name"] for r in kept] == ["慢", "快", "快·别名", "日本"]
+    # 关闭去重时同名节点是两个独立节点，各自占名额，慢节点因此被挤掉
+    assert [r["proxy"]["name"] for r in service._limit_per_country(rows, 2, dedupe=False)] == [
+        "快", "快·别名", "日本"]
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_probe_subscription_writes_records_and_schedule(settings):
     service = create_app(settings).state.service
     await service.gateway.close()
@@ -351,11 +397,15 @@ async def test_probe_subscription_writes_records_and_schedule(settings):
         filtered.exclude_failed = True
         plain = Subscription(name="普通订阅", account_ids=[], source_ids=[source_id],
                              key_hash="hash-plain", key_cipher=service.secrets.encrypt("k2"))
-        db.add_all([filtered, plain])
+        limited = Subscription(name="限额订阅", account_ids=[], source_ids=[source_id],
+                               max_per_country=2, key_hash="hash-limited",
+                               key_cipher=service.secrets.encrypt("k3"))
+        db.add_all([filtered, plain, limited])
         db.flush()
-        filtered_id, plain_id = filtered.id, plain.id
+        filtered_id, plain_id, limited_id = filtered.id, plain.id, limited.id
 
-    assert set(service._subscriptions_due(time.time())) == {filtered_id}  # 只有开启过滤的订阅才定时测速
+    # 只有开启过滤的订阅才定时测速；按国家限额也要测，否则排序没有延迟可用
+    assert set(service._subscriptions_due(time.time())) == {filtered_id, limited_id}
     await service.probe_subscription(filtered_id)
     assert len(calls) == 1
     with service.db() as db:

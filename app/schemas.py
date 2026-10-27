@@ -32,6 +32,7 @@ class SubscriptionInput(BaseModel):
     exclude_failed: bool = False
     dedupe: bool = True
     max_latency: int | None = Field(default=None, ge=1, le=10000)
+    max_per_country: int | None = Field(default=None, ge=1, le=500)
     enabled: bool = True
 
     @model_validator(mode="after")

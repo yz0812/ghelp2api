@@ -59,6 +59,7 @@ class Subscription(Base):
     exclude_failed: Mapped[bool] = mapped_column(Boolean, default=False)
     dedupe: Mapped[bool] = mapped_column(Boolean, default=True)
     max_latency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_per_country: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_probe: Mapped[float | None] = mapped_column(Float, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 

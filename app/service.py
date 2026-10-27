@@ -10,6 +10,8 @@ from sqlalchemy import delete, select, update
 
 from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
 from app.pac import PacError, parse_pac
+from app.regions import country as region_country
+from app.regions import detect as detect_country
 from app.regions import label as region_label
 from app.security import digest, hint
 from app.sources import Fetcher, SourceError
@@ -284,7 +286,7 @@ class Service:
         self.finish(job_id)
 
     async def export_proxies(self, account_ids, source_ids=(), regions=None, exclude_failed=False,
-                             dedupe=True, max_latency=None):
+                             dedupe=True, max_latency=None, max_per_country=None):
         """合并账号与订阅源，返回 (proxy 字典列表, 分组名 → 节点名列表)。
 
         开启过滤时才现场探测；探测有总预算，超时的按未知处理。
@@ -292,13 +294,16 @@ class Service:
         now = time.time()
         await self._refresh_due(account_ids, source_ids, now)
         rows = self._ghelper_rows(account_ids, regions, now) + self._source_rows(source_ids)
-        if exclude_failed or max_latency:  # 只有需要过滤时才现场探测，普通订阅不为等待付出代价
+        if exclude_failed or max_latency or max_per_country:
+            # 只有需要过滤时才现场探测，普通订阅不为等待付出代价
             await self._probe_stale(rows, now)
         if exclude_failed:
             rows = [row for row in rows if row["reachable"] is not False]
         if max_latency:
             # 延迟未知的节点保留：探测没完成不等于节点慢
             rows = [row for row in rows if row["latency"] is None or row["latency"] <= max_latency]
+        if max_per_country:
+            rows = self._limit_per_country(rows, max_per_country, dedupe)
         return self._assemble(rows, dedupe)
 
     async def _refresh_due(self, account_ids, source_ids, now):
@@ -345,7 +350,7 @@ class Service:
         minutes = self.preferences().get("probe_minutes", 30)
         with self.db() as db:
             subs = list(db.scalars(select(Subscription).where(Subscription.enabled.is_(True))))
-        return [s.id for s in subs if (s.exclude_failed or s.max_latency)
+        return [s.id for s in subs if (s.exclude_failed or s.max_latency or s.max_per_country)
                 and (not s.last_probe or now - s.last_probe >= minutes * 60)
                 and now - self.sub_probe_failed.get(s.id, 0) >= SUB_PROBE_RETRY]
 
@@ -414,6 +419,7 @@ class Service:
                           "type": "http", "server": node.server, "port": node.port,
                           "tls": True, "skip-cert-verify": True, "udp": False},
                 "group": f"账号 · {alias} · {account.id[:8]}",
+                "country": region_country(node.region),
                 "reachable": node.reachable, "latency": node.latency, "tested_at": node.tested_at})
         return rows
 
@@ -431,8 +437,9 @@ class Service:
                 proxy = sanitize(stored, f"节点{index + 1}")
                 if not proxy:
                     continue
+                country = detect_country(proxy["name"])  # 加源名前缀之后再识别会被源名干扰
                 proxy["name"] = clean_name(f"{prefix}-{proxy['name']}", prefix)
-                rows.append({"proxy": proxy, "group": f"来源 · {prefix}",
+                rows.append({"proxy": proxy, "group": f"来源 · {prefix}", "country": country,
                              "reachable": None, "latency": None, "tested_at": None})
         return rows
 
@@ -558,6 +565,31 @@ class Service:
                 writer.close()
                 with contextlib.suppress(OSError, TimeoutError):
                     await asyncio.wait_for(writer.wait_closed(), 1)
+
+    def _limit_per_country(self, rows, limit, dedupe=True):
+        """每个国家只保留延迟最低的若干个节点；同国家的入口代号合并计数。
+
+        延迟未知的节点排在已知之后：探测没跑完时它们仍可能入选，只是排在队尾。
+        去重时同一节点（出现在多个账号/来源）只占一个名额，但每个分组里的引用都保留。
+        """
+        def key_of(index, row):
+            return proxy_key(row["proxy"]) if dedupe else str(index)
+
+        buckets: dict[str, dict[str, tuple]] = {}
+        for index, row in enumerate(rows):
+            key = key_of(index, row)
+            country = row.get("country") or "UN"
+            seen = buckets.setdefault(country, {}).get(key)
+            latency = row["latency"]
+            if seen is None:
+                buckets[country][key] = (latency, index)
+            elif latency is not None and (seen[0] is None or latency < seen[0]):
+                buckets[country][key] = (latency, seen[1])
+        kept = set()
+        for bucket in buckets.values():
+            ranked = sorted(bucket.items(), key=lambda item: (item[1][0] is None, item[1][0] or 0, item[1][1]))
+            kept.update(key for key, _ in ranked[:limit])
+        return [row for index, row in enumerate(rows) if key_of(index, row) in kept]
 
     def _assemble(self, rows, dedupe=True):
         """去重时节点只输出一次，但每个包含它的账号/来源分组都保留引用。"""

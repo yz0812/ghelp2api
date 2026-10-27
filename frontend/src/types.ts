@@ -11,7 +11,8 @@ export interface Node {
 }
 export interface Subscription {
   id: string; name: string; account_ids: string[]; source_ids: string[]; regions: string[];
-  exclude_failed: boolean; dedupe: boolean; max_latency: number | null; last_probe: number | null;
+  exclude_failed: boolean; dedupe: boolean; max_latency: number | null;
+  max_per_country: number | null; last_probe: number | null;
   enabled: boolean; clash_url: string; proxies_url: string;
 }
 export interface Source {

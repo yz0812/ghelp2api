@@ -347,3 +347,35 @@ def test_source_url_change_resets_state(client, monkeypatch):
 
 def test_direct_config_rejects_bad_latency(client, account_id):
     assert client.get(f"/api/v1/config/clash?account_ids={account_id}&max_latency=-1").status_code == 422
+    assert client.get(f"/api/v1/config/clash?account_ids={account_id}&max_per_country=0").status_code == 422
+
+
+def test_subscription_limits_nodes_per_country(client, monkeypatch):
+    async def fake_fetch(self, url):
+        return """proxies:
+- {name: 🇺🇸 美国 01, type: ss, server: us1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+- {name: 🇺🇸 洛杉矶 02, type: ss, server: us2.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+- {name: 🇯🇵 日本 01, type: ss, server: jp1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+"""
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    latencies = {"us1.example.com": 200.0, "us2.example.com": 20.0, "jp1.example.com": 90.0}
+
+    async def probe(proxy):
+        return True, latencies[proxy["server"]], "tcp"
+
+    client.app.state.service._probe_proxy = probe
+    source = client.post("/api/v1/sources", json={"name": "机场", "url": "https://sub.example.com/x"}).json()
+    sub = client.post("/api/v1/subscriptions", json={
+        "name": "每国限额", "source_ids": [source["id"]], "max_per_country": 1}).json()
+    assert sub["max_per_country"] == 1
+    config = yaml.safe_load(client.get(sub["clash_url"]).text)
+    # 两个美国入口合并计数，只留延迟最低的那个
+    assert [p["server"] for p in config["proxies"]] == ["us2.example.com", "jp1.example.com"]
+
+    relaxed = client.put(f"/api/v1/subscriptions/{sub['id']}", json={
+        "name": "每国限额", "source_ids": [source["id"]], "max_per_country": 2}).json()
+    assert relaxed["max_per_country"] == 2
+    assert len(yaml.safe_load(client.get(relaxed["clash_url"]).text)["proxies"]) == 3
+    assert client.post("/api/v1/subscriptions", json={
+        "name": "非法", "source_ids": [source["id"]], "max_per_country": 0}).status_code == 422

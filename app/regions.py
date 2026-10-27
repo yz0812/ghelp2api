@@ -5,6 +5,8 @@ node hostname (`<uuid>-<session>-tp1cgt-w7lw.<code>.<cdn>`), so these labels are
 translation, not data returned by GHelper.
 """
 
+import re
+
 # code -> (中文名, ISO 3166-1 alpha-2 用于国旗)
 REGIONS: dict[str, tuple[str, str]] = {
     # 香港
@@ -59,6 +61,32 @@ REGIONS: dict[str, tuple[str, str]] = {
 
 UNKNOWN = ("未知", "UN")
 
+# 节点名里常见的城市/别名（机场常用城市而不是国家命名），归到所属国家。
+CITIES: dict[str, str] = {
+    "台北": "TW", "东京": "JP", "大阪": "JP", "名古屋": "JP", "埼玉": "JP", "首尔": "KR", "釜山": "KR",
+    "纽约": "US", "芝加哥": "US", "达拉斯": "US", "硅谷": "US", "凤凰城": "US", "迈阿密": "US",
+    "拉斯维加斯": "US", "波特兰": "US", "亚特兰大": "US", "阿什本": "US", "丹佛": "US", "圣克拉拉": "US",
+    "伦敦": "GB", "法兰克福": "DE", "柏林": "DE", "慕尼黑": "DE", "巴黎": "FR", "阿姆斯特丹": "NL",
+    "莫斯科": "RU", "多伦多": "CA", "温哥华": "CA", "蒙特利尔": "CA", "悉尼": "AU", "墨尔本": "AU",
+    "孟买": "IN", "班加罗尔": "IN", "新德里": "IN", "迪拜": "AE", "圣保罗": "BR", "奥克兰": "NZ",
+    "米兰": "IT", "罗马": "IT", "马德里": "ES", "苏黎世": "CH", "都柏林": "IE", "斯德哥尔摩": "SE",
+    "华沙": "PL", "特拉维夫": "IL", "伊斯坦布尔": "TR", "胡志明": "VN", "河内": "VN", "曼谷": "TH",
+    "吉隆坡": "MY", "雅加达": "ID", "马尼拉": "PH", "墨西哥城": "MX", "布宜诺斯艾利斯": "AR",
+}
+
+# 节点名里会被当作国家代号识别的两字母代码（含 REGIONS 未收录但机场常用的）。
+CODES = frozenset({country for _, country in REGIONS.values()} | set(CITIES.values()) | {
+    "MO", "UA", "KZ", "EG", "SA", "QA", "FI", "NO", "DK", "AT", "BE", "PT", "CZ", "GR", "HU",
+    "RO", "BG", "HR", "LT", "LV", "EE", "SK", "SI", "RS", "BY", "GE", "AM", "AZ", "UZ", "MN",
+    "NP", "PK", "BD", "LK", "KH", "LA", "BN", "GU", "PR", "PA", "CR", "PE", "CO", "VE", "UY",
+    "PY", "BO", "EC", "GT", "DO", "JM", "CU", "NG", "KE", "MA", "TN", "DZ", "KW", "OM", "BH",
+    "JO", "LB", "CY", "IS", "LU", "MT", "MC", "MD",
+})
+
+_NAMES = {name: country for name, country in REGIONS.values() if country != "UN"} | CITIES
+# 长名字优先：先匹配「洛杉矶」就不会退化成「美国」这类更宽的名字
+_NAMES_BY_LENGTH = sorted(_NAMES.items(), key=lambda item: -len(item[0]))
+
 
 def flag(country: str) -> str:
     """地区代码两字母 → 国旗 emoji（区域指示符字符），非法国家码返回空串。"""
@@ -77,3 +105,42 @@ def label(code: str) -> str:
     """代号 → '🇭🇰 香港'；未收录的代号返回 '🇺🇳 代号'。"""
     emoji, name = split(code)
     return f"{emoji} {name}" if emoji else name
+
+
+def country(code: str) -> str:
+    """入口代号 → 国家两字母代码（LOS/圣何塞都归 US）；未收录的代号返回 UN。"""
+    return REGIONS.get(str(code).upper(), ("", "UN"))[1]
+
+
+def _from_flag(name: str) -> str | None:
+    """名字里的国旗 emoji（两个区域指示符）→ 国家代码。"""
+    letters = [ord(ch) - 0x1F1E6 for ch in name if 0x1F1E6 <= ord(ch) <= 0x1F1FF]
+    for first, second in zip(letters, letters[1:]):  # 相邻的两个区域指示符才是一面旗
+        if 0 <= first < 26 and 0 <= second < 26:
+            code = chr(65 + first) + chr(65 + second)
+            if code in CODES:
+                return code
+    return None
+
+
+def detect(name: str) -> str | None:
+    """从订阅源节点名猜国家：国旗 → 中英文地名 → 独立的两字母代号；猜不出返回 None。
+
+    机场的节点名没有统一格式，这里只做保守识别：宁可归入「未知」，也不把
+    名字里偶然出现的字母当成国家。GHelper 节点不走这里，直接用自己的地区代号。
+    """
+    if not isinstance(name, str) or not name:
+        return None
+    if found := _from_flag(name):
+        return found
+    best = None  # (名字长度, 出现位置) 越小越优先
+    for text, code in _NAMES_BY_LENGTH:
+        index = name.find(text)
+        if index >= 0 and (best is None or (-len(text), index) < best[0]):
+            best = ((-len(text), index), code)
+    if best:
+        return best[1]
+    if found := next((t for t in re.findall(r"(?<![A-Za-z0-9])[A-Z]{2}(?![A-Za-z0-9])", name)
+                      if t in CODES), None):
+        return found
+    return None

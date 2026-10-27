@@ -51,7 +51,7 @@ def create_app(settings: Settings | None = None):
         await service.stop()
         engine.dispose()
 
-    app = FastAPI(title="GHelper Clash Web", version="1.0.0", lifespan=lifespan,
+    app = FastAPI(title="GHelper Clash Web", version="1.1.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.service, app.state.db, app.state.settings = service, db_factory, settings
     attempts = {}
@@ -273,8 +273,8 @@ def create_app(settings: Settings | None = None):
         key = vault.decrypt(sub.key_cipher)
         base = settings.public_base_url.rstrip("/")
         return {k: getattr(sub, k) for k in ("id", "name", "account_ids", "source_ids", "regions",
-                                             "exclude_failed", "dedupe", "max_latency", "last_probe",
-                                             "enabled")} | {
+                                             "exclude_failed", "dedupe", "max_latency",
+                                             "max_per_country", "last_probe", "enabled")} | {
             "clash_url": f"{base}/sub/{key}/clash.yaml", "proxies_url": f"{base}/sub/{key}/proxies.yaml"}
 
     @app.get("/api/v1/subscriptions", dependencies=secured)
@@ -302,7 +302,7 @@ def create_app(settings: Settings | None = None):
             db.add(sub)
             db.flush()
             view, sub_id = subscription_view(sub), sub.id
-            filtered = sub.exclude_failed or sub.max_latency
+            filtered = sub.exclude_failed or sub.max_latency or sub.max_per_country
         if filtered:  # 提交后再触发，避免后台任务读到未提交的数据
             service.schedule_probe(sub_id)
         return view
@@ -317,7 +317,8 @@ def create_app(settings: Settings | None = None):
             verify_sources(db, payload.source_ids)
             for k, v in payload.model_dump().items():
                 setattr(sub, k, v)
-            view, filtered = subscription_view(sub), sub.exclude_failed or sub.max_latency
+            view, filtered = subscription_view(sub), (sub.exclude_failed or sub.max_latency
+                                                      or sub.max_per_country)
         if filtered:
             service.schedule_probe(sub_id)
         return view
@@ -486,9 +487,10 @@ def create_app(settings: Settings | None = None):
         return {"ok": True}
 
     async def config_response(account_ids, source_ids, full, regions=None, exclude_failed=False,
-                              dedupe=True, max_latency=None):
+                              dedupe=True, max_latency=None, max_per_country=None):
         proxies, groups = await service.export_proxies(account_ids, source_ids, regions,
-                                                       exclude_failed, dedupe, max_latency)
+                                                       exclude_failed, dedupe, max_latency,
+                                                       max_per_country)
         if not proxies:
             raise HTTPException(503, "当前没有可用节点，请检查账号或等待刷新", headers={"Retry-After": "60"})
         return Response(render(proxies, groups, full=full), media_type="application/yaml",
@@ -498,7 +500,8 @@ def create_app(settings: Settings | None = None):
     @app.get("/api/v1/config/clash", dependencies=secured)
     async def direct_config(account_ids: str = "", source_ids: str = "", format: str = "full",
                             dedupe: bool = True, exclude_failed: bool = False,
-                            max_latency: int | None = Query(default=None, ge=1, le=10000)):
+                            max_latency: int | None = Query(default=None, ge=1, le=10000),
+                            max_per_country: int | None = Query(default=None, ge=1, le=500)):
         if format not in {"full", "proxies"}:
             raise HTTPException(422, "format 必须是 full 或 proxies")
         accounts = [i for i in account_ids.split(",") if i]
@@ -511,7 +514,8 @@ def create_app(settings: Settings | None = None):
             verify_accounts(db, accounts)
             verify_sources(db, sources)
         return await config_response(accounts, sources, format == "full", exclude_failed=exclude_failed,
-                                     dedupe=dedupe, max_latency=max_latency)
+                                     dedupe=dedupe, max_latency=max_latency,
+                                     max_per_country=max_per_country)
 
     @app.get("/sub/{key}/{filename}", include_in_schema=False)
     async def subscription(key: str, filename: str):
@@ -524,9 +528,9 @@ def create_app(settings: Settings | None = None):
                 raise HTTPException(404, "订阅不存在或已停用")
             accounts, sources = sub.account_ids, sub.source_ids
             regions, exclude_failed, dedupe = sub.regions, sub.exclude_failed, sub.dedupe
-            max_latency = sub.max_latency
+            max_latency, max_per_country = sub.max_latency, sub.max_per_country
         response = await config_response(accounts, sources, filename == "clash.yaml", regions,
-                                         exclude_failed, dedupe, max_latency)
+                                         exclude_failed, dedupe, max_latency, max_per_country)
         # Revocation/deletion may happen while a slow refresh is in progress.
         with db_factory() as db:
             if not db.scalar(select(Subscription.id).where(Subscription.key_hash == digest(key),
