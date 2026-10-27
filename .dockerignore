@@ -1,0 +1,12 @@
+**
+!app/**
+!migrations/**
+!alembic.ini
+!requirements.lock
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/src/**
+!Dockerfile
