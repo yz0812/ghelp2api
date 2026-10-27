@@ -483,3 +483,16 @@ proxy-groups: []
     assert replaced.status_code == 200 and replaced.json()["node_count"] == 1
     assert client.put(f"/api/v1/sources/{source['id']}", json={"url": "https://x.example.com/s"}).status_code == 422
     assert client.post("/api/v1/sources/file", json={"name": "坏", "content": "hello"}).status_code == 422
+
+
+def test_source_file_accepts_up_to_10mb(client):
+    offline_probe(client)
+    line = "- {name: 节点, type: ss, server: jp1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}\n"
+    # 约 8 MB 的导出文件（大段注释 + 一个节点），超过旧的 5 MB 限制但在 10 MB 以内
+    content = "# " + "x" * 8_000_000 + "\nproxies:\n" + line
+    created = client.post("/api/v1/sources/file", json={"name": "大文件", "content": content})
+    assert created.status_code == 201 and created.json()["node_count"] == 1
+    too_big = "# " + "x" * 10_000_001 + "\nproxies:\n" + line
+    assert client.post("/api/v1/sources/file", json={"name": "过大", "content": too_big}).status_code == 422
+    # 其他接口仍按 1 MB 限制
+    assert client.post("/api/v1/sources", content=b"x" * 1_000_001).status_code == 413

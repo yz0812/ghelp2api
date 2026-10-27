@@ -31,9 +31,9 @@ from app.subscription import SubscriptionError, parse_subscription
 
 # 批量导入时等待首次拉取的总时限，超时的源留给生成订阅时按需补拉
 IMPORT_TIMEOUT = 60
-# 一般请求体上限；上传订阅文件单独放宽（解析器本身限制 5 MB 文本）
+# 一般请求体上限；上传订阅文件单独放宽：文件本身最多 10 MB，JSON 转义（换行、引号等）会再放大一些
 MAX_BODY = 1_000_000
-MAX_FILE_BODY = 12_000_000
+MAX_FILE_BODY = 24_000_000
 
 
 def source_invalid(source) -> bool:
@@ -68,7 +68,7 @@ def create_app(settings: Settings | None = None):
         # Limit request payloads including chunked bodies before parsing/validation.
         if request.method in {"POST", "PUT", "PATCH"}:
             size, chunks = 0, []
-            limit = MAX_FILE_BODY if request.url.path.startswith("/api/v1/sources/") and                 request.url.path.endswith("file") else MAX_BODY
+            limit = MAX_FILE_BODY if request.url.path.startswith("/api/v1/sources/") and request.url.path.endswith("/file") else MAX_BODY
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > limit:

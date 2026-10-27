@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import yaml
 
 MAX_PROXIES = 2000
-MAX_CHARS = 5_000_000
+MAX_CHARS = 10_000_000
 SUPPORTED = {"ss", "ssr", "vmess", "trojan", "vless", "hysteria2", "http", "socks5"}
 # 只保留 mihomo 认识的字段，避免把上游的任意键带进生成的配置。
 # dialer-proxy 按名称引用其他节点（改名后会悬空），interface-name/routing-mark 是上游本机设置，都不保留。

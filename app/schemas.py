@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.subscription import MAX_CHARS
+
 
 class AccountInput(BaseModel):
     name: str = Field(default="GHelper", min_length=1, max_length=80)
@@ -70,7 +72,7 @@ class SourcePatch(BaseModel):
 
 class SourceFileInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    content: str = Field(min_length=1, max_length=5_000_000)
+    content: str = Field(min_length=1, max_length=MAX_CHARS)
 
     @field_validator("name")
     @classmethod
@@ -81,7 +83,7 @@ class SourceFileInput(BaseModel):
 
 
 class SourceContentInput(BaseModel):
-    content: str = Field(min_length=1, max_length=5_000_000)
+    content: str = Field(min_length=1, max_length=MAX_CHARS)
 
 
 class SourceImportInput(BaseModel):

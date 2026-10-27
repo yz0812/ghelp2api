@@ -8,7 +8,8 @@ from urllib.parse import urlsplit
 import httpcore
 import httpx
 
-MAX_BYTES = 5 * 1024 * 1024
+# 与解析器的 MAX_CHARS 对齐：按字节计数，UTF-8 解码后的字符数不会更多
+MAX_BYTES = 10_000_000
 TIMEOUT = 10
 # 单次读写超时挡不住“慢慢吐数据”的服务器，整个拉取另设总时限
 TOTAL_TIMEOUT = 30
