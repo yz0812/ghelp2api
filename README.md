@@ -48,9 +48,9 @@ Linux/macOS 使用 `.venv/bin/python` 替换上面的 Python 路径。访问 **h
 - **字段过滤**：只保留 mihomo 认识的节点字段；`dialer-proxy`（按名称引用其他节点，改名后会悬空）、`interface-name`、`routing-mark`（上游本机设置）会被去掉；`type: https` 转为 `http` + `tls`；SS 链接支持 `obfs-local`/`v2ray-plugin` 插件，其他插件的节点会被跳过。
 - **失效检测与清理**：点“检测失效”会把每个已启用的源重新拉取一遍（并发 5，以任务形式记录在“任务记录”里），最近一次拉取失败的源——地址过期、内容为空、没有可解析的节点——标记为失效。检测后可“一键禁用失效”（不再参与订阅生成，随时可重新启用）或“一键删除失效”（同时从引用它的订阅里移除，不可撤销）。订阅源列表每页 9 张卡片分页展示。
 
-## Docker Compose
+## Docker
 
-先使用上面的初始化命令生成 `.env`，然后：
+先使用上面的初始化命令生成 `.env`，兼容当前 `compose.yaml`（若已从仓库移除，可按需自行编写）：
 
 ```sh
 docker compose up -d --build
@@ -61,7 +61,7 @@ docker compose logs -f
 
 远程部署时，在 `.env` 中设置 `PUBLIC_BASE_URL=https://你的域名`、`COOKIE_SECURE=true`，并用反向代理转发到 8000 端口；本地 HTTP 使用 `COOKIE_SECURE=false`。如果直接对外监听，可设置 `BIND_ADDRESS=0.0.0.0`。`PUBLIC_BASE_URL` 是生成订阅链接使用的地址，不能继续保留 localhost。
 
-使用 GHCR 镜像时，设置 `GHELPER_IMAGE=ghcr.io/<owner>/<repo>:V1.1`（版本号取自仓库根目录的 `VERSION` 文件，同时也会发布 `latest` 与 `sha-<commit>`）：
+使用 GHCR 镜像时，设置 `GHELPER_IMAGE=ghcr.io/<owner>/<repo>:V1.2.1`（版本号取自仓库根目录的 `VERSION` 文件，同时也会发布 `latest` 与 `sha-<commit>`）：
 
 ```sh
 docker compose pull
@@ -212,7 +212,7 @@ Linux CI 使用 Playwright Chromium。执行 `python scripts/validate_mihomo.py 
 
 GitHub Actions 工作流包含 Windows/Linux 的 Python 3.12/3.14 测试、前端构建与浏览器测试、镜像启动与数据卷持久化测试，然后构建 amd64/arm64 镜像。PR 仅构建，主分支和 `v*` 标签自动发布，支持手动触发。GitHub Actions 和上游解析库使用固定提交。
 
-镜像版本号自定义，写在仓库根目录的 `VERSION`（当前 `V1.1`）：主分支构建时除了 `latest` 和 `sha-<commit>`，还会打上 `VERSION` 里的标签。发版流程是改 `VERSION` 后提交推送，不要在工作流里硬编码版本。
+镜像版本号自定义，写在仓库根目录的 `VERSION`（当前 `V1.2.1`）：主分支构建时除了 `latest` 和 `sha-<commit>`，还会打上 `VERSION` 里的标签。发版流程是改 `VERSION` 后提交推送，不要在工作流里硬编码版本。
 
 推送项目到 GitHub 后启用 Actions，镜像名称自动取 `ghcr.io/<owner>/<repo>`，不需要手填 Docker Hub 凭据。如果仓库组织策略限制 Packages 写入，需要管理员允许工作流使用 `packages: write`。GHCR 私有包拉取需要认证，公开使用可在包设置中调整可见性。
 
