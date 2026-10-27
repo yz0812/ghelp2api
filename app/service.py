@@ -8,9 +8,11 @@ import time
 
 from sqlalchemy import delete, select, update
 
+from app.mihomo import DELAY_TIMEOUT, MihomoTester, MihomoUnavailable, available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
 from app.pac import PacError, parse_pac
 from app.regions import country as region_country
+from app.regions import country_label as region_country_label
 from app.regions import detect as detect_country
 from app.regions import label as region_label
 from app.security import digest, hint
@@ -50,6 +52,8 @@ def proxy_key(proxy: dict) -> str:
 
 def source_due(source, now) -> bool:
     """成功的源按缓存期重拉，失败的源指数退避，避免每次生成都去撞一个连不上的地址。"""
+    if getattr(source, "kind", "url") == "file":
+        return False
     if source.failures:
         backoff = min(SOURCE_TTL, 60 * 2 ** min(source.failures, 5))
         return source.last_attempt is None or now - source.last_attempt >= backoff
@@ -65,6 +69,7 @@ class Service:
         self.refreshes: dict[str, asyncio.Task] = {}
         self.source_tasks: set[str] = set()
         self.sub_probes: set[str] = set()
+        self.sub_tests: dict[str, str] = {}
         self.sub_probe_failed: dict[str, float] = {}
         self.sub_probe_limit = asyncio.Semaphore(SUB_PROBE_LIMIT)
         self.proxy_limit = asyncio.Semaphore(PROBE_GLOBAL_LIMIT)
@@ -81,7 +86,7 @@ class Service:
     def preferences(self):
         with self.db() as db:
             row = db.get(Preference, "general")
-            return {"refresh_minutes": 30, "probe_minutes": 30} | (row.value if row else {})
+            return {"refresh_minutes": 30, "probe_minutes": 30, "probe_timeout_ms": DELAY_TIMEOUT} | (row.value if row else {})
 
     def refresh_interval(self, account, now, base):
         """会话接近寿命时缩短探测间隔，把发现新节点池的延迟压到 FAST_INTERVAL 内。"""
@@ -297,6 +302,10 @@ class Service:
         if exclude_failed or max_latency or max_per_country:
             # 只有需要过滤时才现场探测，普通订阅不为等待付出代价
             await self._probe_stale(rows, now)
+        return self._assemble(self._filter(rows, exclude_failed, max_latency, max_per_country, dedupe),
+                              dedupe)
+
+    def _filter(self, rows, exclude_failed=False, max_latency=None, max_per_country=None, dedupe=True):
         if exclude_failed:
             rows = [row for row in rows if row["reachable"] is not False]
         if max_latency:
@@ -304,7 +313,113 @@ class Service:
             rows = [row for row in rows if row["latency"] is None or row["latency"] <= max_latency]
         if max_per_country:
             rows = self._limit_per_country(rows, max_per_country, dedupe)
-        return self._assemble(rows, dedupe)
+        return rows
+
+    def _subscription_rows(self, sub, now):
+        return (self._ghelper_rows(list(sub.account_ids), list(sub.regions), now)
+                + self._source_rows(list(sub.source_ids)))
+
+    def subscription_nodes(self, sub_id):
+        """订阅的全部候选节点及最近测速结论，并标出哪些会写入订阅、其余为什么被过滤。
+
+        只读缓存，不触发拉取或探测；节点名与生成时一致，凭据等字段不返回。
+        """
+        now = time.time()
+        with self.db() as db:
+            sub = db.get(Subscription, sub_id)
+            if not sub:
+                return None
+            rows = self._subscription_rows(sub, now)
+            options = (sub.exclude_failed, sub.max_latency, sub.max_per_country, sub.dedupe)
+        exclude_failed, max_latency, max_per_country, dedupe = options
+        self._apply_checks(rows, now)
+        kept = {id(row) for row in self._filter(rows, *options)}
+        seen, result = set(), []
+        for row in rows:
+            proxy, key = row["proxy"], proxy_key(row["proxy"])
+            if id(row) not in kept:
+                if exclude_failed and row["reachable"] is False:
+                    reason = "测速失败"
+                elif max_latency and row["latency"] is not None and row["latency"] > max_latency:
+                    reason = f"延迟超过 {max_latency} ms"
+                elif max_per_country and row["latency"] is None:
+                    reason = "未测速，不占每国名额"
+                else:
+                    reason = f"超出每国 {max_per_country} 个名额"
+            elif dedupe and key in seen:
+                reason = "重复节点，已合并"
+            else:
+                reason = None
+                seen.add(key)
+            result.append({"key": key, "name": proxy["name"], "type": proxy.get("type"),
+                           "server": proxy.get("server"), "port": proxy.get("port"),
+                           "group": row["group"], "origin": row["origin"], "country": row.get("country") or "UN",
+                           "country_label": region_country_label(row.get("country") or "UN"),
+                           "reachable": row["reachable"], "latency": row["latency"],
+                           "tested_at": row["tested_at"], "method": row.get("method"),
+                           "included": reason is None, "reason": reason})
+        return result
+
+    async def refresh_subscription(self, sub_id):
+        """强制重新拉取订阅的账号与订阅源（不看缓存期），再对全部节点重新测速。
+
+        订阅内容在客户端拉取时按规则现场生成，这里把它依赖的节点和测速结论全部更新。
+        """
+        with self.db() as db:
+            sub = db.get(Subscription, sub_id)
+            if not sub:
+                return None, 0
+            accounts, sources = list(sub.account_ids), list(sub.source_ids)
+        limit = asyncio.Semaphore(5)
+
+        async def source(source_id):
+            async with limit:
+                await self.refresh_source(source_id)
+
+        waiting = asyncio.gather(*(asyncio.shield(self.ensure_refresh(i)) for i in accounts),
+                                 *(source(i) for i in sources), return_exceptions=True)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(waiting, SOURCE_FETCH_TIMEOUT + 15)
+        return self.schedule_test(sub_id)
+
+    def schedule_test(self, sub_id, keys=None):
+        """手动测速：不看缓存是否新鲜，重新测一遍订阅（或其中选定）的节点。"""
+        if sub_id in self.sub_tests:
+            return self.sub_tests[sub_id], 0
+        now = time.time()
+        with self.db() as db:
+            sub = db.get(Subscription, sub_id)
+            rows = self._subscription_rows(sub, now) if sub else []
+        targets = {}
+        for row in rows:
+            key = proxy_key(row["proxy"])
+            if (keys is None or key in keys) and key not in targets:
+                row["key"] = key
+                targets[key] = row
+        if not targets:
+            return None, 0
+        job_id = self.new_job("sub_probe", len(targets))
+        self.sub_tests[sub_id] = job_id
+        self.spawn(self.test_job(job_id, sub_id, list(targets.values())))
+        return job_id, len(targets)
+
+    async def test_job(self, job_id, sub_id, rows):
+        try:
+            with self.db.begin() as db:
+                db.get(Job, job_id).status = "running"
+            for row in rows:  # 只统计这一轮的结果，不沿用账号节点上的旧结论
+                row["reachable"] = row["latency"] = row["tested_at"] = None
+            await self._probe_rows(rows, time.time(), budget=SCHEDULED_COVER_BUDGET,
+                                   on_done=lambda: self.progress(job_id))
+            failed = sum(1 for row in rows if row["reachable"] is not True)
+            with self.db.begin() as db:
+                job = db.get(Job, job_id)
+                job.completed = job.total  # 到总时限被取消的探测不会回调进度
+                if failed:
+                    job.errors = [f"{failed} 个节点不可用或测速超时"]
+            self.finish(job_id)
+        finally:
+            self.sub_tests.pop(sub_id, None)
 
     async def _refresh_due(self, account_ids, source_ids, now):
         with self.db() as db:
@@ -418,7 +533,7 @@ class Service:
                 "proxy": {"name": f"{alias}-{region_label(node.region)}-{node.region}-{digest(f'{node.server}:{node.port}')[:10]}",
                           "type": "http", "server": node.server, "port": node.port,
                           "tls": True, "skip-cert-verify": True, "udp": False},
-                "group": f"账号 · {alias} · {account.id[:8]}",
+                "group": f"账号 · {alias} · {account.id[:8]}", "origin": f"账号 · {alias}",
                 "country": region_country(node.region),
                 "reachable": node.reachable, "latency": node.latency, "tested_at": node.tested_at})
         return rows
@@ -439,12 +554,14 @@ class Service:
                     continue
                 country = detect_country(proxy["name"])  # 加源名前缀之后再识别会被源名干扰
                 proxy["name"] = clean_name(f"{prefix}-{proxy['name']}", prefix)
-                rows.append({"proxy": proxy, "group": f"来源 · {prefix}", "country": country,
+                rows.append({"proxy": proxy, "group": f"来源 · {prefix}", "origin": f"订阅源 · {source.name}",
+                             "country": country,
                              "reachable": None, "latency": None, "tested_at": None})
         return rows
 
-    async def _probe_stale(self, rows, now, budget=PROBE_BUDGET):
-        """补齐缺少新鲜结论的节点；返回本轮实际排队的节点数。"""
+    def _apply_checks(self, rows, now):
+        """用最新的有效结论填充节点，返回缺少结论、需要探测的 [(上次结论时间, key, 同指纹的行)]。"""
+        kernel = mihomo_available()
         grouped: dict[str, list[dict]] = {}
         for row in rows:
             grouped.setdefault(proxy_key(row["proxy"]), []).append(row)
@@ -455,25 +572,34 @@ class Service:
                     select(ProxyCheck).where(ProxyCheck.key.in_(grouped)))}
         todo: list[tuple[float, str, list[dict]]] = []
         for key, group in grouped.items():
-            fresh = next((r for r in group if r["tested_at"] and now - r["tested_at"] < CHECK_TTL), None)
-            if fresh:
-                value = (fresh["reachable"], fresh["latency"], fresh["tested_at"])  # 账号测速结果更新鲜
-            else:
-                # 账号节点上的旧结论已过期：先清成未知，没测出新结论前不能被“去除不可用”剔掉
+            check = cached.get(key)
+            # 有内核时端口连通的老结论不算数：当它过期，用真实测速覆盖
+            check_fresh = (check is not None and now - check.tested_at < CHECK_TTL
+                           and not (kernel and check.method == "tcp"))
+            # 账号测速与指纹缓存都可能有结论：取较新的那个（手动测速只写指纹缓存）
+            results = [(r["tested_at"], r["reachable"], r["latency"], "http") for r in group
+                       if r["tested_at"] and now - r["tested_at"] < CHECK_TTL]
+            if check_fresh and check.method != "timeout":
+                results.append((check.tested_at, check.reachable, check.latency, check.method))
+            if results:
+                tested_at, reachable, latency, method = max(results, key=lambda item: item[0])
                 for row in group:
-                    row["reachable"] = row["latency"] = None
-                check = cached.get(key)
-                if check and now - check.tested_at < CHECK_TTL:
-                    if check.method == "timeout":
-                        continue  # 上次没测完：本轮按未知保留，下个周期再试
-                    value = (check.reachable, check.latency, check.tested_at)
-                else:
-                    # 记住这个节点上次有结论的时间，从没测过的排最前面
-                    last = max([r["tested_at"] or 0 for r in group] + [check.tested_at if check else 0])
-                    todo.append((last, key, group))
-                    continue
+                    row["reachable"], row["latency"], row["tested_at"] = reachable, latency, tested_at
+                    row["method"] = method
+                continue
+            # 记住这个节点上次有结论的时间，从没测过的排最前面
+            last = max([r["tested_at"] or 0 for r in group] + [check.tested_at if check else 0])
+            # 旧结论已过期：先清成未知，没测出新结论前不能被“去除不可用”剔掉
             for row in group:
-                row["reachable"], row["latency"], row["tested_at"] = value
+                row["reachable"] = row["latency"] = None
+                row["method"] = check.method if check_fresh else None
+            if not check_fresh:  # 上次没测完（timeout）的本轮按未知保留，下个周期再试
+                todo.append((last, key, group))
+        return todo
+
+    async def _probe_stale(self, rows, now, budget=PROBE_BUDGET):
+        """补齐缺少新鲜结论的节点；返回本轮实际排队的节点数。"""
+        todo = self._apply_checks(rows, now)
         if todo:
             todo.sort(key=lambda item: item[0])  # 按上次结论时间升序：每轮都往后推进，队尾不会被饿死
             for _, key, group in todo:
@@ -485,7 +611,45 @@ class Service:
                     row["latency"], row["tested_at"] = group[0]["latency"], group[0]["tested_at"]
         return len(todo)
 
-    async def _probe_rows(self, rows, now, budget=PROBE_BUDGET):
+    async def _probe_rows(self, rows, now, budget=PROBE_BUDGET, on_done=None):
+        """补齐一批节点的测速结论；有 mihomo 内核时走真实代理测速，否则退回端口连通性探测。"""
+        if not rows:
+            return 0
+        tester = MihomoTester(self.settings.data_dir / "mihomo", limit=self.proxy_limit,
+                              timeout=self.preferences()["probe_timeout_ms"])
+        if tester.binary:
+            try:
+                return await self._probe_rows_kernel(tester, rows, now, budget, on_done)
+            except MihomoUnavailable:
+                pass  # 内核算不上（二进制坏了/配置被拒）：本轮改用端口探测，别让节点全都测不了
+        return await self._probe_rows_port(rows, now, budget, on_done)
+
+    async def _probe_rows_kernel(self, tester, rows, now, budget, on_done):
+        """内核一次只载入一批节点：按批测，测完一批接着载下一批，直到到点或全都测过。"""
+        deadline = time.time() + budget
+        pending, checks = list(rows), []
+        while pending and time.time() < deadline - PROBE_MIN_SLICE:
+            outcomes = await tester.delays([row["proxy"] for row in pending], deadline, on_done)
+            rest = []
+            for row, outcome in zip(pending, outcomes):
+                if outcome is None:  # 超出本批容量或预算耗尽：留到下一轮，不写结论
+                    rest.append(row)
+                    continue
+                if outcome[0] == "unfinished":  # 发起过但没测出结果：记成未知，避免每轮重新排队
+                    checks.append(ProxyCheck(key=row["key"], reachable=False, latency=None,
+                                             method="timeout", tested_at=now))
+                    continue
+                reachable, latency = outcome
+                row["reachable"], row["latency"], row["tested_at"] = reachable, latency, now
+                checks.append(ProxyCheck(key=row["key"], reachable=reachable, latency=latency,
+                                         method="mihomo", tested_at=now))
+            if len(rest) == len(pending):  # 一个都没测成，再循环也是白跑
+                break
+            pending = rest
+        self._store_checks(checks)
+        return len(rows) - len(pending)  # 本轮真正发起过的节点数
+
+    async def _probe_rows_port(self, rows, now, budget=PROBE_BUDGET, on_done=None):
         semaphore = asyncio.Semaphore(PROBE_CONCURRENCY)
         deadline = time.time() + budget
 
@@ -499,6 +663,9 @@ class Service:
                     return await asyncio.wait_for(self._probe_proxy(row["proxy"]), remaining)
                 except (TimeoutError, OSError, ValueError):
                     return None
+                finally:
+                    if on_done:
+                        on_done()
 
         tasks = [asyncio.create_task(one(row)) for row in rows]
         # 硬性截止：到点直接取消未完成的探测，保证生成时间不会超过预算太多。
@@ -526,11 +693,14 @@ class Service:
             row["reachable"], row["latency"], row["tested_at"] = reachable, latency, now
             checks.append(ProxyCheck(key=row["key"], reachable=reachable, latency=latency,
                                      method=method, tested_at=now))
+        self._store_checks(checks)
+        return probed
+
+    def _store_checks(self, checks):
         if checks:
             with self.db.begin() as db:
                 for check in checks:
                     db.merge(check)
-        return probed
 
     async def _probe_proxy(self, proxy):
         server = str(proxy.get("server") or "")
@@ -569,7 +739,8 @@ class Service:
     def _limit_per_country(self, rows, limit, dedupe=True):
         """每个国家只保留延迟最低的若干个节点；同国家的入口代号合并计数。
 
-        延迟未知的节点排在已知之后：探测没跑完时它们仍可能入选，只是排在队尾。
+        没测出延迟的节点不占名额（也不写入订阅）：名额按延迟排序，没有结论就无从比较，
+        塞进来只会把没验证过的地址写进订阅。等它测出结论，下一轮自然会参与排序。
         去重时同一节点（出现在多个账号/来源）只占一个名额，但每个分组里的引用都保留。
         """
         def key_of(index, row):
@@ -577,17 +748,17 @@ class Service:
 
         buckets: dict[str, dict[str, tuple]] = {}
         for index, row in enumerate(rows):
+            latency = row["latency"]
+            if latency is None:
+                continue
             key = key_of(index, row)
             country = row.get("country") or "UN"
             seen = buckets.setdefault(country, {}).get(key)
-            latency = row["latency"]
-            if seen is None:
+            if seen is None or latency < seen[0]:
                 buckets[country][key] = (latency, index)
-            elif latency is not None and (seen[0] is None or latency < seen[0]):
-                buckets[country][key] = (latency, seen[1])
         kept = set()
         for bucket in buckets.values():
-            ranked = sorted(bucket.items(), key=lambda item: (item[1][0] is None, item[1][0] or 0, item[1][1]))
+            ranked = sorted(bucket.items(), key=lambda item: (item[1][0], item[1][1]))
             kept.update(key for key, _ in ranked[:limit])
         return [row for index, row in enumerate(rows) if key_of(index, row) in kept]
 
@@ -619,6 +790,8 @@ class Service:
                 source = db.get(Source, source_id)
                 if not source or not source.enabled:
                     return 0, "订阅源不存在或已停用"
+                if source.kind == "file":  # 文件源没有地址可拉，节点只随重新上传更新
+                    return len(source.proxies or []), None
                 try:
                     url = self.secrets.decrypt(source.url_cipher)
                 except Exception:

@@ -81,6 +81,8 @@ class Source(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(80))
     url_cipher: Mapped[str] = mapped_column(Text)
+    # url：按地址定期拉取；file：用户上传的文件内容，节点只在重新上传时变化
+    kind: Mapped[str] = mapped_column(String(10), default="url", server_default="url")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     proxies: Mapped[list] = mapped_column(JSON, default=list)
     last_fetch: Mapped[float | None] = mapped_column(Float, nullable=True)

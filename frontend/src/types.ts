@@ -16,9 +16,14 @@ export interface Subscription {
   enabled: boolean; clash_url: string; proxies_url: string;
 }
 export interface Source {
-  id: string; name: string; address: string; enabled: boolean; node_count: number;
+  id: string; name: string; address: string; kind: 'url' | 'file'; enabled: boolean; node_count: number;
   last_fetch: number | null; last_error: string | null; failures: number; created_at: number;
   invalid: boolean;
+}
+export interface SubNode {
+  key: string; name: string; type: string; server: string; port: number; group: string; origin: string;
+  country: string; country_label: string; reachable: boolean | null; latency: number | null;
+  tested_at: number | null; method: string | null; included: boolean; reason: string | null;
 }
 export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;

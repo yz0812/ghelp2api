@@ -357,7 +357,7 @@ async def test_export_limits_nodes_per_country(settings):
 
 
 @pytest.mark.asyncio
-async def test_country_limit_ranks_unknown_last_and_counts_deduped_nodes_once(settings):
+async def test_country_limit_ignores_untested_nodes(settings):
     service = create_app(settings).state.service
 
     def row(name, server, latency, country="US"):
@@ -369,11 +369,11 @@ async def test_country_limit_ranks_unknown_last_and_counts_deduped_nodes_once(se
             row("快", "fast.example.com", 100.0), row("快·别名", "fast.example.com", 100.0),
             row("日本", "jp.example.com", None, country="JP")]
     kept = service._limit_per_country(rows, 2)
-    # 未测出延迟的排已知之后；同一节点只占一个名额，但每个分组里的引用都保留
-    assert [r["proxy"]["name"] for r in kept] == ["慢", "快", "快·别名", "日本"]
-    # 关闭去重时同名节点是两个独立节点，各自占名额，慢节点因此被挤掉
+    # 没测出延迟的不占名额：美国只写两个已测的，日本一个都没测出来就一个都不写
+    assert [r["proxy"]["name"] for r in kept] == ["慢", "快", "快·别名"]
+    # 关闭去重时同一地址算两个节点，各自占名额
     assert [r["proxy"]["name"] for r in service._limit_per_country(rows, 2, dedupe=False)] == [
-        "快", "快·别名", "日本"]
+        "快", "快·别名"]
     await service.stop()
 
 

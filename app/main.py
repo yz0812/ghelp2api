@@ -17,17 +17,23 @@ from sqlalchemy import delete, func, select, text
 from app.clash import render
 from app.config import Settings
 from app.db import make_db
+from app.mihomo import available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription
 from app.regions import label as region_label
 from app.schemas import (AccountInput, AccountPatch, ImportInput, LoginInput,
-                         PreferencesInput, ProbeInput, SourceImportInput, SourceInput, SourcePatch,
-                         SubscriptionInput)
+                         PreferencesInput, ProbeInput, SourceContentInput, SourceFileInput,
+                         SourceImportInput, SourceInput, SourcePatch,
+                         SubscriptionInput, SubscriptionProbeInput)
 from app.sources import SourceError, redact, validate_url
 from app.security import Secrets, digest, hint
 from app.service import Service
+from app.subscription import SubscriptionError, parse_subscription
 
 # 批量导入时等待首次拉取的总时限，超时的源留给生成订阅时按需补拉
 IMPORT_TIMEOUT = 60
+# 一般请求体上限；上传订阅文件单独放宽（解析器本身限制 5 MB 文本）
+MAX_BODY = 1_000_000
+MAX_FILE_BODY = 12_000_000
 
 
 def source_invalid(source) -> bool:
@@ -62,9 +68,10 @@ def create_app(settings: Settings | None = None):
         # Limit request payloads including chunked bodies before parsing/validation.
         if request.method in {"POST", "PUT", "PATCH"}:
             size, chunks = 0, []
+            limit = MAX_FILE_BODY if request.url.path.startswith("/api/v1/sources/") and                 request.url.path.endswith("file") else MAX_BODY
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > 1_000_000:
+                if size > limit:
                     return JSONResponse({"detail": "请求体过大"}, status_code=413)
                 chunks.append(chunk)
             request._body = b"".join(chunks)
@@ -342,12 +349,39 @@ def create_app(settings: Settings | None = None):
             db.delete(sub)
         return {"ok": True}
 
+    @app.get("/api/v1/subscriptions/{sub_id}/nodes", dependencies=secured)
+    async def subscription_nodes(sub_id: str):
+        items = service.subscription_nodes(sub_id)
+        if items is None:
+            raise HTTPException(404, "订阅不存在")
+        return {"nodes": items, "job_id": service.sub_tests.get(sub_id)}
+
+    @app.post("/api/v1/subscriptions/{sub_id}/probe", dependencies=secured, status_code=202)
+    async def probe_subscription(sub_id: str, payload: SubscriptionProbeInput):
+        with db_factory() as db:
+            if not db.get(Subscription, sub_id):
+                raise HTTPException(404, "订阅不存在")
+        job_id, count = service.schedule_test(sub_id, set(payload.keys) if payload.keys else None)
+        if not job_id:
+            raise HTTPException(422, "没有可测速的节点")
+        return {"job_id": job_id, "count": count}
+
+    @app.post("/api/v1/subscriptions/{sub_id}/refresh", dependencies=secured, status_code=202)
+    async def refresh_subscription(sub_id: str):
+        with db_factory() as db:
+            if not db.get(Subscription, sub_id):
+                raise HTTPException(404, "订阅不存在")
+        job_id, count = await service.refresh_subscription(sub_id)
+        if not job_id:
+            raise HTTPException(503, "重新拉取后没有可用节点，请检查账号或订阅源")
+        return {"job_id": job_id, "count": count}
+
     def source_view(source):
         try:
-            address = redact(vault.decrypt(source.url_cipher))
+            address = "本地文件" if source.kind == "file" else redact(vault.decrypt(source.url_cipher))
         except Exception:
             address = "无法解密"
-        return {"id": source.id, "name": source.name, "address": address,
+        return {"id": source.id, "name": source.name, "address": address, "kind": source.kind,
                 "enabled": source.enabled, "node_count": len(source.proxies or []),
                 "last_fetch": source.last_fetch, "last_error": source.last_error,
                 "failures": source.failures, "created_at": source.created_at,
@@ -372,6 +406,37 @@ def create_app(settings: Settings | None = None):
         await service.refresh_source(source_id)  # 创建后立即拉取一次，失败也会保存在 last_error
         with db_factory() as db:
             return source_view(db.get(Source, source_id))
+
+    def parse_file(content):
+        try:
+            return parse_subscription(content)
+        except SubscriptionError as exc:
+            raise HTTPException(422, f"文件无法解析：{exc}") from None
+
+    @app.post("/api/v1/sources/file", dependencies=secured, status_code=201)
+    async def add_source_file(payload: SourceFileInput):
+        """直接导入订阅文件内容（Clash YAML 或链接列表），不需要可访问的订阅地址。"""
+        proxies, now = parse_file(payload.content), time.time()
+        with db_factory.begin() as db:
+            source = Source(name=payload.name, kind="file", url_cipher="", proxies=proxies,
+                            last_fetch=now, last_attempt=now)
+            db.add(source)
+            db.flush()
+            return source_view(source)
+
+    @app.put("/api/v1/sources/{source_id}/file", dependencies=secured)
+    async def replace_source_file(source_id: str, payload: SourceContentInput):
+        proxies, now = parse_file(payload.content), time.time()
+        async with service.lock(f"source:{source_id}"):
+            with db_factory.begin() as db:
+                source = db.get(Source, source_id)
+                if not source:
+                    raise HTTPException(404, "订阅源不存在")
+                if source.kind != "file":
+                    raise HTTPException(422, "只有文件导入的订阅源可以重新上传")
+                source.proxies, source.last_fetch, source.last_attempt = proxies, now, now
+                source.last_error, source.failures = None, 0
+                return source_view(source)
 
     @app.post("/api/v1/sources/import", dependencies=secured, status_code=201)
     async def import_sources(payload: SourceImportInput):
@@ -456,6 +521,8 @@ def create_app(settings: Settings | None = None):
                 if payload.enabled is not None:
                     source.enabled = payload.enabled
                 if payload.url:
+                    if source.kind == "file":
+                        raise HTTPException(422, "文件导入的订阅源请重新上传文件")
                     try:
                         source.url_cipher = vault.encrypt(validate_url(payload.url))
                     except SourceError as exc:
@@ -541,7 +608,8 @@ def create_app(settings: Settings | None = None):
     @app.get("/api/v1/settings", dependencies=secured)
     async def get_settings():
         return service.preferences() | {"public_base_url": settings.public_base_url,
-                                        "extension_version": settings.extension_version}
+                                        "extension_version": settings.extension_version,
+                                        "mihomo": mihomo_available()}
 
     @app.put("/api/v1/settings", dependencies=secured)
     async def save_settings(payload: PreferencesInput):

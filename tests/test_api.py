@@ -181,6 +181,10 @@ def test_settings_and_health(client):
     assert client.put("/api/v1/settings", json={"refresh_minutes": 1}).status_code == 422
     assert client.put("/api/v1/settings", json={"refresh_minutes": 10}).status_code == 200
     assert client.get("/api/v1/settings").json()["refresh_minutes"] == 10
+    assert client.get("/api/v1/settings").json()["probe_timeout_ms"] == 5000  # 未设置时取默认值
+    assert client.put("/api/v1/settings", json={"refresh_minutes": 10, "probe_timeout_ms": 500}).status_code == 422
+    assert client.put("/api/v1/settings", json={"refresh_minutes": 10, "probe_timeout_ms": 3000}).status_code == 200
+    assert client.get("/api/v1/settings").json()["probe_timeout_ms"] == 3000
 
 
 def base64_text(value: str) -> str:
@@ -379,3 +383,103 @@ def test_subscription_limits_nodes_per_country(client, monkeypatch):
     assert len(yaml.safe_load(client.get(relaxed["clash_url"]).text)["proxies"]) == 3
     assert client.post("/api/v1/subscriptions", json={
         "name": "非法", "source_ids": [source["id"]], "max_per_country": 0}).status_code == 422
+
+
+def test_subscription_node_details_and_manual_probe(client, monkeypatch):
+    async def fake_fetch(self, url):
+        return """proxies:
+- {name: 🇺🇸 美国 01, type: ss, server: us1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+- {name: 🇺🇸 洛杉矶 02, type: ss, server: us2.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+- {name: 🇯🇵 日本 01, type: ss, server: jp1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+"""
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    latencies = {"us1.example.com": 200.0, "us2.example.com": 20.0, "jp1.example.com": None}
+
+    async def probe(proxy):
+        latency = latencies[proxy["server"]]
+        return latency is not None, latency, "tcp"
+
+    client.app.state.service._probe_proxy = probe
+    source = client.post("/api/v1/sources", json={"name": "机场", "url": "https://sub.example.com/x"}).json()
+    sub = client.post("/api/v1/subscriptions", json={
+        "name": "详情", "source_ids": [source["id"]], "exclude_failed": True, "max_per_country": 1}).json()
+    client.post(f"/api/v1/subscriptions/{sub['id']}/probe", json={})  # 可能与创建时的后台测速并行
+    job_id = client.get(f"/api/v1/subscriptions/{sub['id']}/nodes").json()["job_id"]
+    if job_id:
+        assert wait_job(client, job_id)["kind"] == "sub_probe"
+
+    nodes = {n["server"]: n for n in client.get(f"/api/v1/subscriptions/{sub['id']}/nodes").json()["nodes"]}
+    assert "password" not in str(nodes)
+    assert nodes["us2.example.com"]["included"] and nodes["us2.example.com"]["latency"] == 20.0
+    assert nodes["us2.example.com"]["country_label"] == "🇺🇸 美国"
+    assert nodes["us1.example.com"]["reason"] == "超出每国 1 个名额"
+    assert nodes["jp1.example.com"]["reason"] == "测速失败"
+    # 详情与实际生成的订阅一致
+    config = yaml.safe_load(client.get(sub["clash_url"]).text)
+    assert [p["server"] for p in config["proxies"]] == ["us2.example.com"]
+
+    # 只测选中的节点
+    latencies["jp1.example.com"] = 50.0
+    started = client.post(f"/api/v1/subscriptions/{sub['id']}/probe",
+                          json={"keys": [nodes["jp1.example.com"]["key"]]}).json()
+    assert started["count"] == 1
+    assert wait_job(client, started["job_id"])["status"] == "completed"
+    nodes = {n["server"]: n for n in client.get(f"/api/v1/subscriptions/{sub['id']}/nodes").json()["nodes"]}
+    assert nodes["jp1.example.com"]["included"] and nodes["jp1.example.com"]["latency"] == 50.0
+    assert client.post(f"/api/v1/subscriptions/{sub['id']}/probe", json={"keys": ["x"]}).status_code == 422
+    assert client.get("/api/v1/subscriptions/missing/nodes").status_code == 404
+
+
+def test_subscription_refresh_refetches_sources_and_reprobes(client, monkeypatch):
+    fetched = []
+
+    async def fake_fetch(self, url):
+        fetched.append(url)
+        return "ss://" + base64_text("aes-128-gcm:pw") + "@ss.example.com:8388#节点A"
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    offline_probe(client)
+    source = client.post("/api/v1/sources", json={"name": "机场", "url": "https://sub.example.com/x"}).json()
+    sub = client.post("/api/v1/subscriptions", json={"name": "刷新", "source_ids": [source["id"]]}).json()
+    fetched.clear()
+
+    started = client.post(f"/api/v1/subscriptions/{sub['id']}/refresh")
+    assert started.status_code == 202 and started.json()["count"] == 1
+    assert fetched == ["https://sub.example.com/x"]  # 缓存未过期也会强制重新拉取
+    assert wait_job(client, started.json()["job_id"])["status"] == "completed"
+    node = client.get(f"/api/v1/subscriptions/{sub['id']}/nodes").json()["nodes"][0]
+    assert node["origin"] == "订阅源 · 机场" and node["latency"] == 5.0
+    assert client.post("/api/v1/subscriptions/missing/refresh").status_code == 404
+
+
+def test_source_file_import_and_reupload(client, monkeypatch):
+    async def must_not_fetch(self, url):
+        raise AssertionError("文件源不应发起网络请求")
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", must_not_fetch)
+    offline_probe(client)
+    content = """port: 7890
+proxies:
+- {name: 🇯🇵 日本 01, type: ss, server: jp1.example.com, port: 8388, cipher: aes-128-gcm, password: pw}
+- {name: 🇺🇸 美国 01, type: trojan, server: us1.example.com, port: 443, password: pw}
+proxy-groups: []
+"""
+    created = client.post("/api/v1/sources/file", json={"name": "导出文件", "content": content})
+    assert created.status_code == 201
+    source = created.json()
+    assert source["kind"] == "file" and source["node_count"] == 2 and source["address"] == "本地文件"
+    assert source["invalid"] is False
+
+    sub = client.post("/api/v1/subscriptions", json={"name": "文件", "source_ids": [source["id"]]}).json()
+    config = yaml.safe_load(client.get(sub["clash_url"]).text)
+    assert [p["server"] for p in config["proxies"]] == ["jp1.example.com", "us1.example.com"]
+    assert client.post(f"/api/v1/sources/{source['id']}/refresh").json() == {"node_count": 2}
+    assert client.post(f"/api/v1/subscriptions/{sub['id']}/refresh").status_code == 202
+    assert wait_job(client, client.post("/api/v1/sources/check").json()["job_id"])["errors"] == []
+
+    replaced = client.put(f"/api/v1/sources/{source['id']}/file", json={
+        "content": "ss://" + base64_text("aes-128-gcm:pw") + "@hk.example.com:8388#香港"})
+    assert replaced.status_code == 200 and replaced.json()["node_count"] == 1
+    assert client.put(f"/api/v1/sources/{source['id']}", json={"url": "https://x.example.com/s"}).status_code == 422
+    assert client.post("/api/v1/sources/file", json={"name": "坏", "content": "hello"}).status_code == 422

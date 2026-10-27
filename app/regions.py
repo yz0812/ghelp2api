@@ -107,6 +107,15 @@ def label(code: str) -> str:
     return f"{emoji} {name}" if emoji else name
 
 
+def country_label(code: str) -> str:
+    """国家两字母代码 → '🇺🇸 美国'；没有中文名的只显示国旗和代码，UN 显示「未知」。"""
+    if not code or code == "UN":
+        return UNKNOWN[0]
+    name = REGIONS[code][0] if code in REGIONS and REGIONS[code][1] == code else code
+    emoji = flag(code)
+    return f"{emoji} {name}" if emoji else name
+
+
 def country(code: str) -> str:
     """入口代号 → 国家两字母代码（LOS/圣何塞都归 US）；未收录的代号返回 UN。"""
     return REGIONS.get(str(code).upper(), ("", "UN"))[1]

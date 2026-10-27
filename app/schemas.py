@@ -68,12 +68,32 @@ class SourcePatch(BaseModel):
         return value.strip() if value is not None else None
 
 
+class SourceFileInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=5_000_000)
+
+    @field_validator("name")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("名称不能为空")
+        return value.strip()
+
+
+class SourceContentInput(BaseModel):
+    content: str = Field(min_length=1, max_length=5_000_000)
+
+
 class SourceImportInput(BaseModel):
     sources: list[SourceInput] = Field(min_length=1, max_length=50)
 
 
 class ProbeInput(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=5000)
+
+
+class SubscriptionProbeInput(BaseModel):
+    keys: list[str] | None = Field(default=None, max_length=5000)  # 留空测全部节点
 
 
 class LoginInput(BaseModel):
@@ -84,3 +104,5 @@ class LoginInput(BaseModel):
 class PreferencesInput(BaseModel):
     refresh_minutes: int = Field(ge=5, le=30)
     probe_minutes: int = Field(default=30, ge=5, le=60)
+    # 内核测速时单个节点的超时；超过即判为不可用
+    probe_timeout_ms: int = Field(default=5000, ge=1000, le=10000)

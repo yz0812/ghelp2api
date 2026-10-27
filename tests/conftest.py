@@ -7,6 +7,12 @@ from app.main import create_app
 from tests.fixtures import FakeGateway
 
 
+@pytest.fixture(autouse=True)
+def no_mihomo(monkeypatch):
+    """默认关掉内核测速：单元测试只验证逻辑，不去碰真实网络和本机内核。"""
+    monkeypatch.setenv("MIHOMO_BIN", "off")
+
+
 @pytest.fixture
 def settings(tmp_path):
     return Settings(_env_file=None, admin_password="test-password-12345", admin_api_key="x" * 40,
