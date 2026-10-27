@@ -6,11 +6,18 @@ export interface Account {
 }
 export interface Node {
   id: string; account_id: string; account_name: string; server: string; port: number; region: string;
+  region_label: string;
   latency: number | null; reachable: boolean | null; tested_at: number | null; enabled: boolean; stale: boolean;
 }
 export interface Subscription {
-  id: string; name: string; account_ids: string[]; regions: string[]; exclude_failed: boolean;
+  id: string; name: string; account_ids: string[]; source_ids: string[]; regions: string[];
+  exclude_failed: boolean; dedupe: boolean; max_latency: number | null; last_probe: number | null;
   enabled: boolean; clash_url: string; proxies_url: string;
+}
+export interface Source {
+  id: string; name: string; address: string; enabled: boolean; node_count: number;
+  last_fetch: number | null; last_error: string | null; failures: number; created_at: number;
+  invalid: boolean;
 }
 export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;

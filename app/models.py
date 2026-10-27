@@ -1,7 +1,7 @@
 import time
 import uuid
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -54,8 +54,12 @@ class Subscription(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)
     key_cipher: Mapped[str] = mapped_column(Text)
     account_ids: Mapped[list] = mapped_column(JSON)
+    source_ids: Mapped[list] = mapped_column(JSON, default=list)
     regions: Mapped[list] = mapped_column(JSON, default=list)
     exclude_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    dedupe: Mapped[bool] = mapped_column(Boolean, default=True)
+    max_latency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_probe: Mapped[float | None] = mapped_column(Float, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -68,6 +72,31 @@ class Job(Base):
     completed: Mapped[int] = mapped_column(default=0)
     errors: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class Source(Base):
+    """外部订阅源；地址可能含 token，只存密文。"""
+    __tablename__ = "sources"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    url_cipher: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    proxies: Mapped[list] = mapped_column(JSON, default=list)
+    last_fetch: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_attempt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failures: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ProxyCheck(Base):
+    """按节点指纹缓存的可用性探测结果。"""
+    __tablename__ = "proxy_checks"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reachable: Mapped[bool] = mapped_column(Boolean, default=False)
+    latency: Mapped[float | None] = mapped_column(Float, nullable=True)
+    method: Mapped[str] = mapped_column(String(10), default="tcp")
+    tested_at: Mapped[float] = mapped_column(Float, default=time.time)
 
 
 class LoginSession(Base):

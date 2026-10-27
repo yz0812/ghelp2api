@@ -153,14 +153,17 @@ def read_snapshot_token(folder: Path) -> str | None:
         if not path.exists():
             raise ExtractionError("快照缺少当前有效的表文件")
         files.append(path)
-    logs = []
+    # A manifest that has not recorded its log number yet (log_number 0) reports no current
+    # log; LevelDB then replays every log, so start from 0 instead of skipping them all.
+    current_log_number = 0
     if version.current_log:
         current_log = folder / version.current_log
         if not current_log.exists():
             raise ExtractionError("快照缺少当前日志文件")
-        # Logs newer than the manifest may contain writes not flushed to its current log number yet.
-        logs = [p for p in folder.glob("*.log")
-                if p.stem.isdigit() and int(p.stem) >= int(current_log.stem)]
+        current_log_number = int(current_log.stem)
+    # Logs newer than the manifest may contain writes not flushed to its current log number yet.
+    logs = [p for p in folder.glob("*.log")
+            if p.stem.isdigit() and int(p.stem) >= current_log_number]
     # Preserve the previous WAL during recovery; LevelDB records it as tag 9.
     previous_log = 0
     for edit in reader.GetVersionEdits():

@@ -61,6 +61,17 @@ def test_real_deleted_log(tmp_path):
     assert extract_token(store) is None
 
 
+def test_manifest_without_log_number_reads_wal(tmp_path):
+    store = tmp_path / "db"
+    create_log_store(store, ["a" * 32, "b" * 32])
+    # Browsers leave log_number at 0 until the first roll, so the manifest names no current
+    # log while the writes live in a later WAL file.
+    (store / "MANIFEST-000001").write_bytes(log_block(varint(2) + varint(0) + varint(4) + varint(2)))
+    (store / "000002.log").rename(store / "000003.log")
+    assert read_snapshot_token(store) == "b" * 32
+    assert extract_token(store) == "b" * 32
+
+
 def test_discover_profiles_and_custom_id(tmp_path):
     ext = "b" * 32
     for profile in ["Default", "Profile 1"]:

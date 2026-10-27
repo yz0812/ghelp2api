@@ -4,6 +4,7 @@ import yaml
 from sqlalchemy import select
 
 from app.models import Account, Node
+from app.sources import SourceError
 
 
 def refresh(client, account_id):
@@ -155,6 +156,12 @@ def test_fresh_failed_probe_filter_and_aging(client, account_id):
     subscription = client.post("/api/v1/subscriptions", json={"name": "筛选", "account_ids": [account_id],
                                 "regions": ["HKT"], "exclude_failed": True}).json()
     assert client.get(subscription["clash_url"]).status_code == 503
+
+    # 结论过期后生成时会重新探测；这里让探测返回可用，节点应重新放行
+    async def reachable(proxy):
+        return True, 12.0, "tcp"
+
+    client.app.state.service._probe_proxy = reachable
     with client.app.state.db.begin() as db:
         node = db.scalar(select(Node).where(Node.region == "HKT"))
         node.tested_at = time.time() - 1900
@@ -174,3 +181,169 @@ def test_settings_and_health(client):
     assert client.put("/api/v1/settings", json={"refresh_minutes": 1}).status_code == 422
     assert client.put("/api/v1/settings", json={"refresh_minutes": 10}).status_code == 200
     assert client.get("/api/v1/settings").json()["refresh_minutes"] == 10
+
+
+def base64_text(value: str) -> str:
+    import base64
+    return base64.b64encode(value.encode()).decode()
+
+
+def offline_probe(client):
+    async def probe(proxy):
+        return True, 5.0, "tcp"
+
+    client.app.state.service._probe_proxy = probe
+
+
+def test_source_crud_and_merged_subscription(client, monkeypatch):
+    async def fake_fetch(self, url):
+        return "ss://" + base64_text("aes-128-gcm:pw") + "@ss.example.com:8388#节点A"
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    offline_probe(client)
+    created = client.post("/api/v1/sources",
+                          json={"name": "机场", "url": "https://sub.example.com/x?token=secret"})
+    assert created.status_code == 201
+    body = created.json()
+    assert body["node_count"] == 1
+    assert body["address"] == "https://sub.example.com"  # 路径和 token 不外泄
+    assert "secret" not in str(body)
+    source_id = body["id"]
+
+    assert client.post("/api/v1/subscriptions", json={"name": "空"}).status_code == 422
+    subscription = client.post("/api/v1/subscriptions",
+                               json={"name": "统一", "source_ids": [source_id]}).json()
+    config = yaml.safe_load(client.get(subscription["clash_url"]).text)
+    assert [p["type"] for p in config["proxies"]] == ["ss"]
+    assert config["proxies"][0]["name"] == "机场-节点A"
+
+    assert client.put(f"/api/v1/sources/{source_id}", json={"enabled": False}).status_code == 200
+    assert client.get(subscription["clash_url"]).status_code == 503
+    assert client.delete(f"/api/v1/sources/{source_id}").status_code == 200
+    remaining = client.get("/api/v1/subscriptions").json()[0]
+    assert remaining["source_ids"] == []
+    assert remaining["enabled"] is False
+
+
+def test_source_rejects_private_address(client):
+    created = client.post("/api/v1/sources", json={"name": "内网", "url": "http://127.0.0.1:8000/x"})
+    assert created.status_code == 201
+    assert created.json()["node_count"] == 0
+    assert "内网" in created.json()["last_error"]
+
+
+def test_source_batch_import(client, monkeypatch):
+    async def fake_fetch(self, url):
+        host = url.split("//", 1)[1].split("/", 1)[0]
+        return "ss://" + base64_text("aes-128-gcm:pw") + f"@{host}:8388#节点"
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    offline_probe(client)
+    result = client.post("/api/v1/sources/import", json={"sources": [
+        {"name": "批量A", "url": "https://a.example.com/sub"},
+        {"name": "批量B", "url": "https://b.example.com/sub"},
+    ]})
+    assert result.status_code == 201
+    assert [item["node_count"] for item in result.json()] == [1, 1]
+    assert len(client.get("/api/v1/sources").json()) == 2
+    assert client.post("/api/v1/sources/import", json={"sources": []}).status_code == 422
+
+
+def wait_job(client, job_id, timeout=5):
+    import asyncio
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/v1/jobs/{job_id}").json()
+        if job["status"] not in {"pending", "running"}:
+            return job
+        client.portal.call(asyncio.sleep, 0.05)
+    raise AssertionError(f"任务未在 {timeout} 秒内完成")
+
+
+def test_source_check_and_bulk_cleanup(client, monkeypatch):
+    async def fake_fetch(self, url):
+        if "dead" in url:
+            raise SourceError("订阅地址返回 HTTP 403")
+        if "empty" in url:
+            return "proxies: []"
+        return "ss://" + base64_text("aes-128-gcm:pw") + "@ss.example.com:8388#节点A"
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    offline_probe(client)
+    created = client.post("/api/v1/sources/import", json={"sources": [
+        {"name": "正常", "url": "https://ok.example.com/sub"},
+        {"name": "过期", "url": "https://dead.example.com/sub"},
+        {"name": "空订阅", "url": "https://empty.example.com/sub"},
+    ]}).json()
+    assert [item["invalid"] for item in created] == [False, True, True]
+    assert created[1]["last_error"] == "订阅地址返回 HTTP 403"
+    assert created[2]["node_count"] == 0
+
+    # 地址恢复后重新检测：失效标记跟着最近一次拉取结果走
+    async def healthy(self, url):
+        return "ss://" + base64_text("aes-128-gcm:pw") + "@ss.example.com:8388#节点A"
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", healthy)
+    started = client.post("/api/v1/sources/check")
+    assert started.status_code == 202
+    finished = wait_job(client, started.json()["job_id"])
+    assert finished["kind"] == "source" and finished["status"] == "completed"
+    assert finished["total"] == finished["completed"] == 3 and finished["errors"] == []
+    assert [s["invalid"] for s in client.get("/api/v1/sources").json()] == [False, False, False]
+
+    # 再次失效，验证一键禁用与一键删除
+    monkeypatch.setattr("app.sources.Fetcher.fetch", fake_fetch)
+    for item in client.get("/api/v1/sources").json():
+        client.portal.call(client.app.state.service.refresh_source, item["id"])
+    assert client.post("/api/v1/sources/invalid/disable").json() == {"disabled": 2}
+    assert [s["enabled"] for s in client.get("/api/v1/sources").json()] == [True, False, False]
+    assert wait_job(client, client.post("/api/v1/sources/check").json()["job_id"])["total"] == 1  # 只检测启用中的源
+
+    ids = [s["id"] for s in client.get("/api/v1/sources").json()]
+    assert client.post("/api/v1/subscriptions", json={"name": "清理", "source_ids": ids}).status_code == 201
+    assert client.post("/api/v1/sources/invalid/delete").json() == {"deleted": 2}
+    assert [s["name"] for s in client.get("/api/v1/sources").json()] == ["正常"]
+    remaining = client.get("/api/v1/subscriptions").json()[0]
+    assert remaining["source_ids"] == [ids[0]] and remaining["enabled"] is True
+
+
+def test_source_check_requires_enabled_sources(client):
+    assert client.post("/api/v1/sources/check").status_code == 422
+    source = client.post("/api/v1/sources", json={"name": "停用", "url": "https://dead.example.com/x"}).json()
+    assert client.put(f"/api/v1/sources/{source['id']}", json={"enabled": False}).status_code == 200
+    assert client.post("/api/v1/sources/check").status_code == 422
+
+
+def test_subscription_max_latency_filter(client, account_id):
+    refresh(client, account_id)
+
+    async def slow(proxy):
+        return True, 800.0, "tcp"
+
+    client.app.state.service._probe_proxy = slow
+    strict = client.post("/api/v1/subscriptions", json={
+        "name": "限速", "account_ids": [account_id], "max_latency": 200}).json()
+    assert client.get(strict["clash_url"]).status_code == 503
+
+    relaxed = client.put(f"/api/v1/subscriptions/{strict['id']}", json={
+        "name": "限速", "account_ids": [account_id], "max_latency": 1000}).json()
+    assert relaxed["max_latency"] == 1000
+    assert client.get(relaxed["clash_url"]).status_code == 200
+
+
+def test_source_url_change_resets_state(client, monkeypatch):
+    async def failing(self, url):
+        raise SourceError("无法连接订阅地址")
+
+    monkeypatch.setattr("app.sources.Fetcher.fetch", failing)
+    source_id = client.post("/api/v1/sources", json={"name": "旧", "url": "https://old.example.com/s"}).json()["id"]
+    assert client.get("/api/v1/sources").json()[0]["invalid"] is True
+    assert client.put(f"/api/v1/sources/{source_id}", json={"url": "https://new.example.com/s"}).status_code == 200
+    view = client.get("/api/v1/sources").json()[0]
+    assert view["failures"] == 0 and view["last_error"] is None and view["invalid"] is False
+    assert view["address"] == "https://new.example.com"
+    assert client.put(f"/api/v1/sources/{source_id}", json={"name": "   "}).status_code == 422
+
+
+def test_direct_config_rejects_bad_latency(client, account_id):
+    assert client.get(f"/api/v1/config/clash?account_ids={account_id}&max_latency=-1").status_code == 422

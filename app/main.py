@@ -1,10 +1,12 @@
+import asyncio
+import contextlib
 import hmac
 import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,11 +17,22 @@ from sqlalchemy import delete, func, select, text
 from app.clash import render
 from app.config import Settings
 from app.db import make_db
-from app.models import Account, Job, LoginSession, Node, Preference, Subscription
+from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription
+from app.regions import label as region_label
 from app.schemas import (AccountInput, AccountPatch, ImportInput, LoginInput,
-                         PreferencesInput, ProbeInput, SubscriptionInput)
+                         PreferencesInput, ProbeInput, SourceImportInput, SourceInput, SourcePatch,
+                         SubscriptionInput)
+from app.sources import SourceError, redact, validate_url
 from app.security import Secrets, digest, hint
 from app.service import Service
+
+# 批量导入时等待首次拉取的总时限，超时的源留给生成订阅时按需补拉
+IMPORT_TIMEOUT = 60
+
+
+def source_invalid(source) -> bool:
+    """最近一次拉取失败，或没有任何可用节点缓存，都视为失效。"""
+    return bool(source.last_error) or (source.last_fetch is not None and not source.proxies)
 
 
 def create_app(settings: Settings | None = None):
@@ -201,7 +214,7 @@ def create_app(settings: Settings | None = None):
                 for sub in db.scalars(select(Subscription)):
                     if account_id in sub.account_ids:
                         sub.account_ids = [i for i in sub.account_ids if i != account_id]
-                        if not sub.account_ids:
+                        if not sub.account_ids and not sub.source_ids:
                             sub.enabled = False
         return {"ok": True}
 
@@ -219,7 +232,8 @@ def create_app(settings: Settings | None = None):
     async def nodes():
         with db_factory() as db:
             return [{"id": n.id, "account_id": a.id, "account_name": a.name, "server": n.server,
-                     "port": n.port, "region": n.region, "latency": n.latency, "reachable": n.reachable,
+                     "port": n.port, "region": n.region, "region_label": region_label(n.region),
+                     "latency": n.latency, "reachable": n.reachable,
                      "tested_at": n.tested_at, "enabled": a.enabled,
                      "stale": not a.last_success or time.time() - a.last_success > 3600}
                     for n, a in db.execute(select(Node, Account).join(Account)).all()]
@@ -258,7 +272,9 @@ def create_app(settings: Settings | None = None):
     def subscription_view(sub):
         key = vault.decrypt(sub.key_cipher)
         base = settings.public_base_url.rstrip("/")
-        return {k: getattr(sub, k) for k in ("id", "name", "account_ids", "regions", "exclude_failed", "enabled")} | {
+        return {k: getattr(sub, k) for k in ("id", "name", "account_ids", "source_ids", "regions",
+                                             "exclude_failed", "dedupe", "max_latency", "last_probe",
+                                             "enabled")} | {
             "clash_url": f"{base}/sub/{key}/clash.yaml", "proxies_url": f"{base}/sub/{key}/proxies.yaml"}
 
     @app.get("/api/v1/subscriptions", dependencies=secured)
@@ -271,15 +287,25 @@ def create_app(settings: Settings | None = None):
         if existing != set(ids):
             raise HTTPException(422, "包含不存在的账号")
 
+    def verify_sources(db, ids):
+        existing = set(db.scalars(select(Source.id).where(Source.id.in_(ids))))
+        if existing != set(ids):
+            raise HTTPException(422, "包含不存在的订阅源")
+
     @app.post("/api/v1/subscriptions", dependencies=secured, status_code=201)
     async def add_subscription(payload: SubscriptionInput):
         key = secrets.token_urlsafe(32)
         with db_factory.begin() as db:
             verify_accounts(db, payload.account_ids)
+            verify_sources(db, payload.source_ids)
             sub = Subscription(**payload.model_dump(), key_hash=digest(key), key_cipher=vault.encrypt(key))
             db.add(sub)
             db.flush()
-            return subscription_view(sub)
+            view, sub_id = subscription_view(sub), sub.id
+            filtered = sub.exclude_failed or sub.max_latency
+        if filtered:  # 提交后再触发，避免后台任务读到未提交的数据
+            service.schedule_probe(sub_id)
+        return view
 
     @app.put("/api/v1/subscriptions/{sub_id}", dependencies=secured)
     async def edit_subscription(sub_id: str, payload: SubscriptionInput):
@@ -288,9 +314,13 @@ def create_app(settings: Settings | None = None):
             if not sub:
                 raise HTTPException(404, "订阅不存在")
             verify_accounts(db, payload.account_ids)
+            verify_sources(db, payload.source_ids)
             for k, v in payload.model_dump().items():
                 setattr(sub, k, v)
-            return subscription_view(sub)
+            view, filtered = subscription_view(sub), sub.exclude_failed or sub.max_latency
+        if filtered:
+            service.schedule_probe(sub_id)
+        return view
 
     @app.post("/api/v1/subscriptions/{sub_id}/rotate", dependencies=secured)
     async def rotate(sub_id: str):
@@ -311,24 +341,177 @@ def create_app(settings: Settings | None = None):
             db.delete(sub)
         return {"ok": True}
 
-    async def config_response(ids, full, regions=None, exclude_failed=False):
-        rows = await service.export_rows(ids, regions, exclude_failed)
-        if not rows:
+    def source_view(source):
+        try:
+            address = redact(vault.decrypt(source.url_cipher))
+        except Exception:
+            address = "无法解密"
+        return {"id": source.id, "name": source.name, "address": address,
+                "enabled": source.enabled, "node_count": len(source.proxies or []),
+                "last_fetch": source.last_fetch, "last_error": source.last_error,
+                "failures": source.failures, "created_at": source.created_at,
+                "invalid": source_invalid(source)}
+
+    @app.get("/api/v1/sources", dependencies=secured)
+    async def sources():
+        with db_factory() as db:
+            return [source_view(s) for s in db.scalars(select(Source).order_by(Source.created_at))]
+
+    @app.post("/api/v1/sources", dependencies=secured, status_code=201)
+    async def add_source(payload: SourceInput):
+        try:
+            url = validate_url(payload.url)
+        except SourceError as exc:
+            raise HTTPException(422, str(exc)) from None
+        with db_factory.begin() as db:
+            source = Source(name=payload.name, url_cipher=vault.encrypt(url))
+            db.add(source)
+            db.flush()
+            source_id = source.id
+        await service.refresh_source(source_id)  # 创建后立即拉取一次，失败也会保存在 last_error
+        with db_factory() as db:
+            return source_view(db.get(Source, source_id))
+
+    @app.post("/api/v1/sources/import", dependencies=secured, status_code=201)
+    async def import_sources(payload: SourceImportInput):
+        prepared = []
+        for item in payload.sources:
+            try:
+                prepared.append((item.name, validate_url(item.url)))
+            except SourceError as exc:
+                raise HTTPException(422, f"{item.name}：{exc}") from None
+        with db_factory.begin() as db:
+            created = []
+            for name, url in prepared:
+                source = Source(name=name, url_cipher=vault.encrypt(url))
+                db.add(source)
+                db.flush()
+                created.append(source.id)
+        limit = asyncio.Semaphore(5)
+
+        async def one(source_id):
+            async with limit:
+                await service.refresh_source(source_id)
+
+        # 整批导入设总时限：没来得及拉取的源保持未拉取状态，生成订阅时会按需补拉
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.gather(*(one(i) for i in created), return_exceptions=True),
+                                   IMPORT_TIMEOUT)
+        with db_factory() as db:
+            return [source_view(db.get(Source, i)) for i in created]
+
+    @app.post("/api/v1/sources/check", dependencies=secured, status_code=202)
+    async def check_sources():
+        """重新拉取每个已启用的订阅源，把失效的挑出来。"""
+        if service.source_check_job_id:
+            return {"job_id": service.source_check_job_id}
+        with db_factory() as db:
+            ids = list(db.scalars(select(Source.id).where(Source.enabled.is_(True))))
+        if not ids:
+            raise HTTPException(422, "还没有启用的订阅源可检测")
+        job_id = service.new_job("source", len(ids))
+        service.source_check_job_id = job_id
+        service.spawn(service.source_check_job(job_id, ids))
+        return {"job_id": job_id}
+
+    def detach_source(db, source_id):
+        for sub in db.scalars(select(Subscription)):
+            if source_id in sub.source_ids:
+                sub.source_ids = [i for i in sub.source_ids if i != source_id]
+                if not sub.account_ids and not sub.source_ids:
+                    sub.enabled = False
+
+    @app.post("/api/v1/sources/invalid/disable", dependencies=secured)
+    async def disable_invalid_sources():
+        count = 0
+        with db_factory.begin() as db:
+            for source in db.scalars(select(Source)):
+                if source.enabled and source_invalid(source):
+                    source.enabled = False
+                    count += 1
+        return {"disabled": count}
+
+    @app.post("/api/v1/sources/invalid/delete", dependencies=secured)
+    async def delete_invalid_sources():
+        with db_factory.begin() as db:
+            invalid = [s for s in db.scalars(select(Source)) if source_invalid(s)]
+            for source in invalid:
+                db.delete(source)
+                detach_source(db, source.id)
+            deleted = [s.id for s in invalid]
+        for source_id in deleted:
+            service.forget_source(source_id)
+        return {"deleted": len(deleted)}
+
+    @app.put("/api/v1/sources/{source_id}", dependencies=secured)
+    async def edit_source(source_id: str, payload: SourcePatch):
+        async with service.lock(f"source:{source_id}"):
+            with db_factory.begin() as db:
+                source = db.get(Source, source_id)
+                if not source:
+                    raise HTTPException(404, "订阅源不存在")
+                if payload.name is not None:
+                    source.name = payload.name.strip()
+                if payload.enabled is not None:
+                    source.enabled = payload.enabled
+                if payload.url:
+                    try:
+                        source.url_cipher = vault.encrypt(validate_url(payload.url))
+                    except SourceError as exc:
+                        raise HTTPException(422, str(exc)) from None
+                    # 地址变了：旧节点、错误与退避都属于旧地址，清空后下次生成时立即拉取
+                    source.proxies, source.last_fetch, source.last_attempt = [], None, None
+                    source.last_error, source.failures = None, 0
+        return {"ok": True}
+
+    @app.post("/api/v1/sources/{source_id}/refresh", dependencies=secured)
+    async def refresh_source(source_id: str):
+        with db_factory() as db:
+            if not db.get(Source, source_id):
+                raise HTTPException(404, "订阅源不存在")
+        count, error = await service.refresh_source(source_id)
+        if error:
+            raise HTTPException(502, error)
+        return {"node_count": count}
+
+    @app.delete("/api/v1/sources/{source_id}", dependencies=secured)
+    async def delete_source(source_id: str):
+        with db_factory.begin() as db:
+            source = db.get(Source, source_id)
+            if not source:
+                raise HTTPException(404, "订阅源不存在")
+            db.delete(source)
+            detach_source(db, source_id)
+        service.forget_source(source_id)
+        return {"ok": True}
+
+    async def config_response(account_ids, source_ids, full, regions=None, exclude_failed=False,
+                              dedupe=True, max_latency=None):
+        proxies, groups = await service.export_proxies(account_ids, source_ids, regions,
+                                                       exclude_failed, dedupe, max_latency)
+        if not proxies:
             raise HTTPException(503, "当前没有可用节点，请检查账号或等待刷新", headers={"Retry-After": "60"})
-        return Response(render(rows, full=full), media_type="application/yaml",
+        return Response(render(proxies, groups, full=full), media_type="application/yaml",
                         headers={"Content-Disposition": 'inline; filename="ghelper.yaml"',
                                  "profile-update-interval": "1"})
 
     @app.get("/api/v1/config/clash", dependencies=secured)
-    async def direct_config(account_ids: str, format: str = "full"):
+    async def direct_config(account_ids: str = "", source_ids: str = "", format: str = "full",
+                            dedupe: bool = True, exclude_failed: bool = False,
+                            max_latency: int | None = Query(default=None, ge=1, le=10000)):
         if format not in {"full", "proxies"}:
             raise HTTPException(422, "format 必须是 full 或 proxies")
-        ids = account_ids.split(",")
-        if len(ids) > 100:
-            raise HTTPException(422, "一次最多选择 100 个账号")
+        accounts = [i for i in account_ids.split(",") if i]
+        sources = [i for i in source_ids.split(",") if i]
+        if not accounts and not sources:
+            raise HTTPException(422, "请至少选择一个账号或订阅源")
+        if len(accounts) > 100 or len(sources) > 100:
+            raise HTTPException(422, "一次最多选择 100 个来源")
         with db_factory() as db:
-            verify_accounts(db, ids)
-        return await config_response(ids, format == "full")
+            verify_accounts(db, accounts)
+            verify_sources(db, sources)
+        return await config_response(accounts, sources, format == "full", exclude_failed=exclude_failed,
+                                     dedupe=dedupe, max_latency=max_latency)
 
     @app.get("/sub/{key}/{filename}", include_in_schema=False)
     async def subscription(key: str, filename: str):
@@ -339,8 +522,11 @@ def create_app(settings: Settings | None = None):
                                                        Subscription.enabled.is_(True)))
             if not sub:
                 raise HTTPException(404, "订阅不存在或已停用")
-            ids, regions, exclude_failed = sub.account_ids, sub.regions, sub.exclude_failed
-        response = await config_response(ids, filename == "clash.yaml", regions, exclude_failed)
+            accounts, sources = sub.account_ids, sub.source_ids
+            regions, exclude_failed, dedupe = sub.regions, sub.exclude_failed, sub.dedupe
+            max_latency = sub.max_latency
+        response = await config_response(accounts, sources, filename == "clash.yaml", regions,
+                                         exclude_failed, dedupe, max_latency)
         # Revocation/deletion may happen while a slow refresh is in progress.
         with db_factory() as db:
             if not db.scalar(select(Subscription.id).where(Subscription.key_hash == digest(key),

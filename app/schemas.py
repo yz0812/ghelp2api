@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AccountInput(BaseModel):
@@ -26,10 +26,49 @@ class AccountPatch(BaseModel):
 
 class SubscriptionInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    account_ids: list[str] = Field(min_length=1, max_length=100)
+    account_ids: list[str] = Field(default_factory=list, max_length=100)
+    source_ids: list[str] = Field(default_factory=list, max_length=100)
     regions: list[str] = Field(default_factory=list, max_length=100)
     exclude_failed: bool = False
+    dedupe: bool = True
+    max_latency: int | None = Field(default=None, ge=1, le=10000)
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def has_origin(self):
+        if not self.account_ids and not self.source_ids:
+            raise ValueError("至少选择一个账号或订阅源")
+        return self
+
+
+class SourceInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    url: str = Field(min_length=8, max_length=2000)
+
+    @field_validator("name", "url")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("内容不能为空")
+        return value.strip()
+
+
+class SourcePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    url: str | None = Field(default=None, min_length=8, max_length=2000)
+    enabled: bool | None = None
+
+    @field_validator("name", "url")
+    @classmethod
+    def nonblank(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("内容不能为空")
+        return value.strip() if value is not None else None
+
+
+class SourceImportInput(BaseModel):
+    sources: list[SourceInput] = Field(min_length=1, max_length=50)
 
 
 class ProbeInput(BaseModel):
@@ -43,3 +82,4 @@ class LoginInput(BaseModel):
 
 class PreferencesInput(BaseModel):
     refresh_minutes: int = Field(ge=5, le=30)
+    probe_minutes: int = Field(default=30, ge=5, le=60)

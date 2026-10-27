@@ -24,10 +24,11 @@ def test_invalid_pac(pac):
         parse_pac(pac)
 
 
-def test_yaml_escapes_and_aggregate_deduplicates():
-    row = {"server": "node.example.com", "port": 443, "region": "HKT", "account_id": "account1", "account_name": 'name: "test"\nunsafe'}
-    other = row | {"account_id": "account2"}
-    output = yaml.safe_load(render([row, other]))
-    assert len(output["proxies"]) == 1
-    assert len(output["proxy-groups"]) == 4
-    assert "\n" not in output["proxies"][0]["name"]
+def test_yaml_render_groups_and_unicode():
+    name = "账号-🇭🇰 香港-HKT-abc123"
+    proxy = {"name": name, "type": "http", "server": "node.example.com", "port": 443,
+             "tls": True, "skip-cert-verify": True, "udp": False}
+    output = yaml.safe_load(render([proxy], {"账号 · 测试": [name]}))
+    assert output["proxies"] == [proxy]
+    assert {g["name"] for g in output["proxy-groups"]} == {"节点选择", "自动选择", "账号 · 测试"}
+    assert yaml.safe_load(render([proxy], {"账号 · 测试": [name]}, full=False)) == {"proxies": [proxy]}

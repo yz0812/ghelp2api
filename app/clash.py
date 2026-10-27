@@ -1,27 +1,13 @@
-import hashlib
-import re
-
 import yaml
 
 
-def render(rows: list[dict], *, full: bool = True) -> str:
-    if not rows:
+def render(proxies: list[dict], groups: dict[str, list[str]], *, full: bool = True) -> str:
+    """按已合并、去重、命名好的节点与分组生成 Clash 配置。"""
+    if not proxies:
         raise ValueError("没有可导出的节点")
-    proxies = {}
-    groups: dict[str, list[str]] = {}
-    for row in sorted(rows, key=lambda r: (r["account_id"], r["region"], r["server"], r["port"])):
-        key = (row["server"], row["port"])
-        alias = re.sub(r"[\x00-\x1f\x7f]", "", row["account_name"])[:40]
-        account_group = f"账号 · {alias} · {row['account_id'][:8]}"
-        if key not in proxies:
-            suffix = hashlib.sha256(f"{key[0]}:{key[1]}".encode()).hexdigest()[:10]
-            name = f"{alias}-{row['account_id'][:8]}-{row['region']}-{suffix}"
-            proxies[key] = {"name": name, "type": "http", "server": key[0], "port": key[1],
-                            "tls": True, "skip-cert-verify": True, "udp": False}
-        groups.setdefault(account_group, []).append(proxies[key]["name"])
-    config = {"proxies": list(proxies.values())}
+    config = {"proxies": proxies}
     if full:
-        names = [p["name"] for p in proxies.values()]
+        names = [p["name"] for p in proxies]
         auto = {"type": "url-test", "url": "https://www.gstatic.com/generate_204",
                 "interval": 300, "tolerance": 100}
         config = {"mixed-port": 7891, "allow-lan": False, "mode": "rule", "log-level": "info",
