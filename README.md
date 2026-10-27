@@ -140,8 +140,14 @@ Chrome / Edge 中已登录 GHelper 扩展时，可直接从本地存储读出 to
 npm --prefix frontend run build
 ```
 
-CI 会跑 Windows/Linux × Python 3.12/3.14 测试、前端构建与 Playwright 端到端测试、容器启动与数据卷持久化检查，然后构建双架构镜像。PR 只构建，主分支和 `v*` 标签自动推送。
+CI 会跑 Windows/Linux × Python 3.12/3.14 测试、前端构建与 Playwright 端到端测试、容器启动与数据卷持久化检查，然后构建双架构镜像。
 
-**发版**：改 `VERSION`（当前 `V1.2.1`）后提交推送即可，不要在工作流里写死版本号。镜像会同时打上 `VERSION`、`latest` 和 `sha-<commit>`。
+**工作流只在推送版本标签时触发**，日常提交不会构建镜像：
+
+```sh
+git tag v1.2.1 && git push origin v1.2.1
+```
+
+镜像会打上 `1.2.1`、`1.2`、`latest`、`V1.2.1`（取自仓库根目录的 `VERSION`）和 `sha-<commit>`。版本号同步写在 `VERSION` 里，不要在工作流中硬编码。也可以在 Actions 页面手动触发 `workflow_dispatch`。
 
 不要把 `.env`、数据库、token 导出文件、真实节点 YAML 提交到仓库。反向代理日志记得隐藏 `/sub/` 路径里的密钥。
