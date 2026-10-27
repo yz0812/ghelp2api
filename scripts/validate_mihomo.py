@@ -21,6 +21,25 @@ CHECKSUMS = {
 }
 
 
+def synthetic_config() -> str:
+    """合成一份覆盖两类来源的配置，供 mihomo 校验；同时把脚本和 render() 的接口绑在一起。"""
+    # GHelper 账号节点，以及订阅源里常见的带插件/传输层配置的节点
+    proxies = [
+        {"name": "合成测试账号-🇭🇰 香港-HKT-0000000000", "type": "http",
+         "server": "synthetic.example.com", "port": 443, "tls": True,
+         "skip-cert-verify": True, "udp": False},
+        {"name": "机场-ss-obfs", "type": "ss", "server": "ss.example.com", "port": 8388,
+         "cipher": "aes-128-gcm", "password": "synthetic", "udp": True,
+         "plugin": "obfs", "plugin-opts": {"mode": "http", "host": "bing.com"}},
+        {"name": "机场-trojan-ws", "type": "trojan", "server": "trojan.example.com", "port": 443,
+         "password": "synthetic", "udp": True, "network": "ws",
+         "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example.com"}}},
+    ]
+    groups = {"账号 · 合成测试账号": [proxies[0]["name"]],
+              "来源 · 机场": [proxies[1]["name"], proxies[2]["name"]]}
+    return render(proxies, groups)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true")
@@ -52,10 +71,8 @@ def main():
                 binary.chmod(0o755)
     if not binary:
         parser.error("请使用 --download 或 --binary")
-    rows = [{"account_id": "synthetic-account", "account_name": "合成测试账号", "region": "HKT",
-             "server": "synthetic.example.com", "port": 443}]
     config = directory / "validation.yaml"
-    config.write_text(render(rows), encoding="utf-8")
+    config.write_text(synthetic_config(), encoding="utf-8")
     subprocess.run([str(binary.resolve()), "-t", "-d", str(directory), "-f", str(config)],
                    check=True, timeout=120, env=os.environ.copy())
     print(f"mihomo {VERSION}: generated Clash configuration validated")

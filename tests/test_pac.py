@@ -32,3 +32,14 @@ def test_yaml_render_groups_and_unicode():
     assert output["proxies"] == [proxy]
     assert {g["name"] for g in output["proxy-groups"]} == {"节点选择", "自动选择", "账号 · 测试"}
     assert yaml.safe_load(render([proxy], {"账号 · 测试": [name]}, full=False)) == {"proxies": [proxy]}
+
+
+def test_mihomo_validation_script_matches_render_signature():
+    """脚本曾在 render() 改签名后静默失败（CI 才发现），这里把它纳进单元测试。"""
+    from scripts.validate_mihomo import synthetic_config
+
+    output = yaml.safe_load(synthetic_config())
+    names = {p["name"] for p in output["proxies"]}
+    assert {g["name"] for g in output["proxy-groups"]} >= {"账号 · 合成测试账号", "来源 · 机场"}
+    builtin = {g["name"] for g in output["proxy-groups"]} | {"DIRECT"}
+    assert all(p in names | builtin for g in output["proxy-groups"] for p in g["proxies"])
