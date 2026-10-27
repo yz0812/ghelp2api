@@ -1,0 +1,5 @@
+# Fixed upstream revision relaxes the old python-snappy==0.6.1 constraint.
+dfindexeddb @ https://github.com/google/dfindexeddb/archive/b65ff9bd6dedb61e7b288e1bdadf68ef6b1f56bb.zip#sha256=16cd656ea4e7fcc5d36226b8016173f3425c4398fdc9541f275b3c1a23c26ab5
+python-snappy==0.7.3
+cramjam==2.14.0
+zstd==1.5.7.2
