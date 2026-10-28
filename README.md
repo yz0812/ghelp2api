@@ -142,12 +142,14 @@ npm --prefix frontend run build
 
 CI 会跑 Windows/Linux × Python 3.12/3.14 测试、前端构建与 Playwright 端到端测试、容器启动与数据卷持久化检查，然后构建双架构镜像。
 
-**工作流只在推送版本标签时触发**，日常提交不会构建镜像：
+**发版**：工作流只在推送版本标签时触发，日常提交不会构建镜像。版本号只有一个来源——仓库根目录的 `VERSION`，写法与 git tag 完全相同（当前 `v1.2.1`）。
 
 ```sh
-git tag v1.2.1 && git push origin v1.2.1
+# 1. 改 VERSION 为 v1.2.2 并提交推送
+# 2. 打同名 tag 并推送，触发构建
+git tag v1.2.2 && git push origin v1.2.2
 ```
 
-镜像会打上 `1.2.1`、`1.2`、`latest`、`V1.2.1`（取自仓库根目录的 `VERSION`）和 `sha-<commit>`。版本号同步写在 `VERSION` 里，不要在工作流中硬编码。也可以在 Actions 页面手动触发 `workflow_dispatch`。
+工作流会校验 tag 与 `VERSION` 是否一致，不一致直接失败，避免标签对不上。镜像标签全部由这一个版本号派生：`1.2.2`、`1.2`、`v1.2.2`、`latest`、`sha-<commit>`。也可在 Actions 页面手动触发 `workflow_dispatch`。
 
 不要把 `.env`、数据库、token 导出文件、真实节点 YAML 提交到仓库。反向代理日志记得隐藏 `/sub/` 路径里的密钥。

@@ -100,12 +100,20 @@ jobs:
       - name: Read version
         id: version
         shell: bash
-        # 版本号写在仓库的 VERSION 文件里，发版时改它而不是改本文件。
+        # 版本号只有一个来源：仓库根目录的 VERSION，写法与 git tag 完全一致（如 v1.2.1）。
+        # 推送 tag 时必须与 VERSION 相同，否则镜像标签会和 tag 对不上。
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
-          if [[ ! "$version" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "VERSION 内容不合法，必须是合法的镜像标签：$version" >&2
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION 必须是 vX.Y.Z 形式的版本号：$version" >&2
             exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            if [[ "$tag" != "$version" ]]; then
+              echo "git tag（$tag）与 VERSION（$version）不一致，请先对齐再发版" >&2
+              exit 1
+            fi
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
       - name: Login to GHCR
@@ -119,13 +127,13 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE_NAME }}
-          # 标签来自推送的 git tag（如 v1.2.1）：1.2.1、1.2、latest；
-          # 另加一个取自 VERSION 的标签，保持与旧用法一致。
+          # 标签全部由同一个版本号派生（已校验 tag 与 VERSION 一致）：
+          # v1.2.1 → 1.2.1、1.2、v1.2.1、latest、sha-<commit>
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
             type=raw,value=${{ steps.version.outputs.value }}
+            type=raw,value=latest
             type=sha
       - name: Build multi-platform image and publish
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
