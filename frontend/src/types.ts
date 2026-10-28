@@ -28,3 +28,7 @@ export interface SubNode {
 export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;
 }
+export interface Preferences {
+  refresh_minutes: number; probe_minutes: number; probe_timeout_ms: number;
+  mihomo: boolean; public_base_url: string; extension_version: string; version: string;
+}

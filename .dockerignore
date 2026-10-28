@@ -3,6 +3,7 @@
 !migrations/**
 !alembic.ini
 !requirements.lock
+!VERSION
 !frontend/package.json
 !frontend/package-lock.json
 !frontend/index.html

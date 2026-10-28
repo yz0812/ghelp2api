@@ -4,6 +4,19 @@ from cryptography.fernet import Fernet
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+
+
+def read_version() -> str:
+    """版本号只有一个来源：仓库根目录的 VERSION（vX.Y.Z），这里去掉 v 前缀用于展示。"""
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip().removeprefix("v") or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+APP_VERSION = read_version()
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

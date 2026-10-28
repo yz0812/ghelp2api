@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, func, select, text
 
 from app.clash import render
-from app.config import Settings
+from app.config import APP_VERSION, Settings
 from app.db import make_db
 from app.mihomo import available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription
@@ -31,6 +31,8 @@ from app.subscription import SubscriptionError, parse_subscription
 
 # 批量导入时等待首次拉取的总时限，超时的源留给生成订阅时按需补拉
 IMPORT_TIMEOUT = 60
+# 登录会话有效期（固定窗口，不滑动续期）；cookie max_age 与数据库 expires 必须一致
+SESSION_TTL = 30 * 24 * 3600
 # 一般请求体上限；上传订阅文件单独放宽：文件本身最多 10 MB，JSON 转义（换行、引号等）会再放大一些
 MAX_BODY = 1_000_000
 MAX_FILE_BODY = 24_000_000
@@ -57,7 +59,7 @@ def create_app(settings: Settings | None = None):
         await service.stop()
         engine.dispose()
 
-    app = FastAPI(title="GHelper Clash Web", version="1.1.0", lifespan=lifespan,
+    app = FastAPI(title="GHelper Clash Web", version=APP_VERSION, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.service, app.state.db, app.state.settings = service, db_factory, settings
     attempts = {}
@@ -130,9 +132,9 @@ def create_app(settings: Settings | None = None):
             old = request.cookies.get("ghelper_session")
             if old:
                 db.execute(delete(LoginSession).where(LoginSession.id == digest(old)))
-            db.add(LoginSession(id=digest(key), csrf=csrf, expires=now + 43200))
+            db.add(LoginSession(id=digest(key), csrf=csrf, expires=now + SESSION_TTL))
         response.set_cookie("ghelper_session", key, httponly=True, samesite="strict",
-                            secure=settings.cookie_secure, max_age=43200)
+                            secure=settings.cookie_secure, max_age=SESSION_TTL)
         return {"username": settings.admin_username, "csrf": csrf}
 
     @app.get("/api/v1/auth/me")
@@ -609,6 +611,7 @@ def create_app(settings: Settings | None = None):
     async def get_settings():
         return service.preferences() | {"public_base_url": settings.public_base_url,
                                         "extension_version": settings.extension_version,
+                                        "version": APP_VERSION,
                                         "mihomo": mihomo_available()}
 
     @app.put("/api/v1/settings", dependencies=secured)

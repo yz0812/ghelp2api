@@ -33,6 +33,8 @@ RUN pip install --no-cache-dir -r requirements.lock
 COPY app/ app/
 COPY migrations/ migrations/
 COPY alembic.ini ./
+# 版本号唯一来源；app/config.py 在运行时读取它，缺失会退化为 0.0.0
+COPY VERSION ./
 COPY --from=frontend /build/dist frontend/dist/
 USER ghelper
 EXPOSE 8000

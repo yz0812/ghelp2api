@@ -3,7 +3,7 @@ import time
 import yaml
 from sqlalchemy import select
 
-from app.models import Account, Node
+from app.models import Account, LoginSession, Node
 from app.sources import SourceError
 
 
@@ -22,10 +22,24 @@ def test_auth_csrf_and_logout(client, settings):
     result = client.post("/api/v1/auth/login", json={"username": "admin", "password": settings.admin_password})
     assert result.status_code == 200
     assert "HttpOnly" in result.headers["set-cookie"]
+    assert "Max-Age=2592000" in result.headers["set-cookie"]  # 30 天
     assert client.post("/api/v1/accounts", json={"token": "a" * 32}).status_code == 403
     client.headers["X-CSRF-Token"] = result.json()["csrf"]
     assert client.post("/api/v1/accounts", json={"token": "a" * 32}).status_code == 201
     assert client.post("/api/v1/auth/logout").status_code == 200
+    assert client.get("/api/v1/accounts").status_code == 401
+
+
+def test_session_expires_after_ttl(client, settings):
+    client.headers.pop("Authorization")
+    result = client.post("/api/v1/auth/login", json={"username": "admin", "password": settings.admin_password})
+    assert result.status_code == 200
+    csrf = result.json()["csrf"]
+    with client.app.state.db.begin() as db:
+        session = db.scalars(select(LoginSession)).one()
+        assert session.expires > time.time() + 29 * 86400
+        session.expires = time.time() - 1  # 模拟已过期
+    client.headers["X-CSRF-Token"] = csrf
     assert client.get("/api/v1/accounts").status_code == 401
 
 
@@ -496,3 +510,11 @@ def test_source_file_accepts_up_to_10mb(client):
     assert client.post("/api/v1/sources/file", json={"name": "过大", "content": too_big}).status_code == 422
     # 其他接口仍按 1 MB 限制
     assert client.post("/api/v1/sources", content=b"x" * 1_000_001).status_code == 413
+
+
+def test_version_comes_from_single_source(client):
+    """版本号只写在仓库根目录的 VERSION 里，后端读取后也要对外暴露同一致的值。"""
+    from app.config import APP_VERSION, VERSION_FILE
+
+    assert APP_VERSION == VERSION_FILE.read_text(encoding="utf-8").strip().removeprefix("v")
+    assert client.get("/api/v1/settings").json()["version"] == APP_VERSION
