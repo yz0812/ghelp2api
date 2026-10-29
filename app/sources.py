@@ -8,6 +8,9 @@ from urllib.parse import urlsplit
 import httpcore
 import httpx
 
+from app.subscription import parse_link
+
+LINK_SCHEMES = {"vless"}
 # 与解析器的 MAX_CHARS 对齐：按字节计数，UTF-8 解码后的字符数不会更多
 MAX_BYTES = 10_000_000
 TIMEOUT = 10
@@ -19,13 +22,26 @@ class SourceError(Exception):
     pass
 
 
+def is_link(url: str) -> bool:
+    """单个节点链接（如 vless://）本身就是订阅内容，不需要联网拉取。"""
+    return urlsplit(url).scheme in LINK_SCHEMES
+
+
 def validate_url(raw: str) -> str:
     url = (raw or "").strip()
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        raise SourceError("只支持 http/https 订阅地址")
     if len(url) > 2000:
         raise SourceError("订阅地址过长")
+    if is_link(url):
+        try:
+            node = parse_link(url)
+        except (ValueError, KeyError, IndexError):
+            node = None
+        if not node:
+            raise SourceError("节点链接无法解析")
+        return url
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise SourceError("只支持 http/https 订阅地址或 vless:// 节点链接")
     return url
 
 
@@ -88,7 +104,10 @@ class Fetcher:
         await self.client.aclose()
 
     async def fetch(self, url: str) -> str:
-        await ensure_public(urlsplit(validate_url(url)).hostname)
+        url = validate_url(url)
+        if is_link(url):
+            return url
+        await ensure_public(urlsplit(url).hostname)
         try:
             async with asyncio.timeout(TOTAL_TIMEOUT), self.client.stream("GET", url) as response:
                 if response.is_redirect:

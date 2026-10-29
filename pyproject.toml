@@ -1,6 +1,6 @@
 [project]
 name = "ghelper-clash-web"
-version = "1.2.2"
+version = "1.2.3"
 description = "Personal GHelper account and Clash subscription manager"
 requires-python = ">=3.12"
 dependencies = ["fastapi", "uvicorn", "sqlalchemy>=2", "alembic", "httpx", "cryptography", "pydantic-settings", "pyyaml"]

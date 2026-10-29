@@ -44,6 +44,13 @@ function openFile() {
   fileVisible.value = true
 }
 
+/** vless:// 链接的 #片段 是节点名，未写名称时优先用它。 */
+function linkName(address: string) {
+  const hash = address.indexOf('#')
+  if (!/^vless:/i.test(address) || hash < 0) return ''
+  try { return decodeURIComponent(address.slice(hash + 1)).trim() } catch { return '' }
+}
+
 async function save() {
   await action(async () => {
     if (editing.value) {
@@ -54,10 +61,12 @@ async function save() {
       })
       editVisible.value = false
     } else {
+      // 地址从协议头开始取到行尾：vless 链接的查询串里可能带逗号，不能按分隔符切
       const entries = form.value.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map((line, index) => {
-        const parts = line.split(/[,，\s]+/).filter(Boolean)
-        const address = parts.length > 1 ? parts.at(-1)! : line
-        return { name: (parts.length > 1 ? parts.slice(0, -1).join(' ') : hostOf(address) || `订阅源 ${index + 1}`).slice(0, 80), url: address }
+        const start = line.search(/(?:https?|vless):\/\//i)
+        const address = start > 0 ? line.slice(start) : line
+        const name = start > 0 ? line.slice(0, start).replace(/[,，\s]+$/, '') : ''
+        return { name: (name || linkName(address) || hostOf(address) || `订阅源 ${index + 1}`).slice(0, 80), url: address }
       })
       if (!entries.length) throw new Error('请填写至少一个订阅地址')
       const created = await api('/sources/import', 'POST', { sources: entries })
@@ -222,11 +231,11 @@ async function deleteInvalid() {
 
   <el-dialog v-model="visible" title="批量添加订阅源" width="620px" @closed="form.text = ''">
     <el-form label-position="top">
-      <el-form-item label="订阅地址（每行一个，可写「名称,地址」）">
-        <el-input v-model="form.text" type="textarea" :rows="9" placeholder="机场 A,https://example.com/api/v1/client/subscribe?token=...&#10;https://example.com/clash.yaml" />
+      <el-form-item label="订阅地址或 vless:// 节点链接（每行一个，可写「名称,地址」）">
+        <el-input v-model="form.text" type="textarea" :rows="9" placeholder="机场 A,https://example.com/api/v1/client/subscribe?token=...&#10;https://example.com/clash.yaml&#10;vless://uuid@vl.example.com:443?security=reality&amp;sni=...#节点名" />
       </el-form-item>
     </el-form>
-    <p class="muted">支持 Clash YAML 与 base64 / 明文链接订阅（ss、vmess、trojan、vless、hysteria2）。未写名称时使用域名。地址加密保存，保存后立即拉取。</p>
+    <p class="muted">支持 Clash YAML 与 base64 / 明文链接订阅（ss、vmess、trojan、vless、hysteria2），也可直接粘贴单个 vless:// 节点链接作为订阅源。未写名称时使用节点名或域名。地址加密保存，保存后立即拉取。</p>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="busy" :disabled="!form.text.trim()" @click="save">保存</el-button>

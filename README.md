@@ -143,7 +143,7 @@ npm --prefix frontend run build
 
 CI 会跑 Windows/Linux × Python 3.12/3.14 测试、前端构建与 Playwright 端到端测试、容器启动与数据卷持久化检查，然后构建双架构镜像。
 
-**发版**：工作流只在推送版本标签时触发，日常提交不会构建镜像。版本号只有一个来源——仓库根目录的 `VERSION`，写法与 git tag 完全相同（当前 `v1.2.2`）。后端在启动时读取该文件（`app/config.py`），前端通过 `/api/v1/settings` 拿到的 `version` 显示在侧栏与设置页，因此不需要在代码里再写一遍。
+**发版**：工作流只在推送版本标签时触发，日常提交不会构建镜像。版本号只有一个来源——仓库根目录的 `VERSION`，写法与 git tag 完全相同（当前 `v1.2.3`）。后端在启动时读取该文件（`app/config.py`），前端通过 `/api/v1/settings` 拿到的 `version` 显示在侧栏与设置页，因此不需要在代码里再写一遍。
 
 ```sh
 # 1. 改 VERSION 为 v1.2.3 并提交推送

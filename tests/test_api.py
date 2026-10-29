@@ -267,6 +267,19 @@ def test_source_batch_import(client, monkeypatch):
     assert client.post("/api/v1/sources/import", json={"sources": []}).status_code == 422
 
 
+def test_source_vless_link(client):
+    """vless:// 节点链接直接作为订阅源，不联网也能得到节点。"""
+    link = "vless://uuid-9@vl.example.com:443?security=reality&sni=www.example.com&pbk=key#美国"
+    result = client.post("/api/v1/sources/import", json={"sources": [{"name": "单节点", "url": link}]})
+    assert result.status_code == 201
+    body = result.json()[0]
+    assert body["node_count"] == 1 and body["last_error"] is None
+    assert body["address"] == "vless://vl.example.com" and "uuid-9" not in str(body)
+    assert client.post(f"/api/v1/sources/{body['id']}/refresh").json() == {"node_count": 1}
+    bad = client.post("/api/v1/sources/import", json={"sources": [{"name": "坏", "url": "vless://uuid@:443"}]})
+    assert bad.status_code == 422
+
+
 def wait_job(client, job_id, timeout=5):
     import asyncio
     deadline = time.time() + timeout

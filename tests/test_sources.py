@@ -17,6 +17,27 @@ def test_redact_hides_path_and_query():
     assert redact("https://sub.example.com:8443/api?token=secret") == "https://sub.example.com"
 
 
+VLESS = "vless://uuid-1@vl.example.com:443?security=reality&sni=www.example.com&alpn=h2,http/1.1#节点"
+
+
+def test_vless_link_as_source():
+    assert validate_url(f" {VLESS} ") == VLESS
+    assert redact(VLESS) == "vless://vl.example.com"  # 不泄露 uuid
+    for bad in ["vless://uuid@:443", "vless://@vl.example.com:443", "vless://uuid@vl.example.com:99999"]:
+        with pytest.raises(SourceError):
+            validate_url(bad)
+
+
+@pytest.mark.asyncio
+async def test_vless_link_is_not_fetched():
+    fetcher = Fetcher()
+    await fetcher.client.aclose()
+    fetcher.client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: pytest.fail("节点链接不应发起网络请求")))
+    assert await fetcher.fetch(VLESS) == VLESS
+    await fetcher.close()
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "localhost"])
 @pytest.mark.asyncio
 async def test_private_targets_rejected(host):
