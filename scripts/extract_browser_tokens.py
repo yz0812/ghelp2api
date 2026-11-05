@@ -250,7 +250,9 @@ def main():
     parser.add_argument("--profile", default="all", help="Default、Profile 1 或 all")
     parser.add_argument("--user-data-dir", type=Path)
     parser.add_argument("--extension-id")
-    parser.add_argument("--show-secrets", action="store_true")
+    parser.add_argument("--show-secrets", action="store_true",
+                        help=argparse.SUPPRESS)  # 兼容旧用法：默认已输出完整 token
+    parser.add_argument("--mask", action="store_true", help="脱敏显示，默认输出完整 token")
     parser.add_argument("--output", type=Path, help="显式导出包含完整 token 的 JSON；拒绝覆盖已有文件")
     args = parser.parse_args()
     if args.profile != "all" and (Path(args.profile).name != args.profile or args.profile in {".", ".."}):
@@ -273,7 +275,7 @@ def main():
                 if token:
                     results.append({"name": f"{browser}-{profile}", "token": token,
                                     "browser": browser, "profile": profile, "extension_id": ext_id})
-                    shown = token if args.show_secrets else token[:4] + "****" + token[-4:]
+                    shown = token[:4] + "****" + token[-4:] if args.mask else token
                     print(f"{browser} | {profile} | GHelper {version} | {shown}")
                 else:
                     print(f"{browser} | {profile} | 当前没有 token（未登录或已清除）")
@@ -294,4 +296,11 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    # 打包成 exe 后双击运行会直接结束并关闭窗口，停留一下让用户看到结果。
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+        try:
+            input("\n按回车键退出...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    sys.exit(exit_code)

@@ -126,12 +126,30 @@ Chrome / Edge 中已登录 GHelper 扩展时，可直接从本地存储读出 to
 
 ```powershell
 .\.venv\Scripts\python -m pip install -r requirements-local.txt
-.\.venv\Scripts\python scripts\extract_browser_tokens.py                    # 脱敏显示
+.\.venv\Scripts\python scripts\extract_browser_tokens.py                    # 显示完整 token
+.\.venv\Scripts\python scripts\extract_browser_tokens.py --mask             # 脱敏显示
 .\.venv\Scripts\python scripts\extract_browser_tokens.py --output tokens-export.json   # 导出后到管理台导入
-.\.venv\Scripts\python scripts\extract_browser_tokens.py --browser edge --profile "Profile 1" --show-secrets
+.\.venv\Scripts\python scripts\extract_browser_tokens.py --browser edge --profile "Profile 1"
 ```
 
 只读取当前生效的 token，快照不稳定或损坏时报错退出，不输出历史凭证。退出码：0 成功，1 未找到，2 失败。
+
+### 打包成 exe（给没有 Python 环境的机器用）
+
+```powershell
+pwsh -File scripts\build_extractor_exe.ps1 -Python .\.venv312\Scripts\python.exe
+```
+
+生成 `dist-exe\ghelper-token-extractor.exe`（单文件，约 9 MB），复制到其他 Windows 电脑即可运行，无需安装 Python。用法与脚本一致：
+
+```powershell
+.\ghelper-token-extractor.exe                                      # 双击或直接运行：显示完整 token
+.\ghelper-token-extractor.exe --mask                               # 脱敏显示
+.\ghelper-token-extractor.exe --output tokens-export.json          # 导出完整 token 后到管理台导入
+.\ghelper-token-extractor.exe --browser edge --profile "Profile 1"
+```
+
+打包机需要 `requirements-local.txt` 和 `pyinstaller`。该 exe 会读取浏览器扩展的本地存储，部分杀毒软件可能误报，分发前请自行确认。
 
 ## 开发与发版
 

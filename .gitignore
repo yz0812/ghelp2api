@@ -23,3 +23,5 @@ playwright-report/
 *.egg-info/
 dist/
 build/
+dist-exe/
+build-exe/
