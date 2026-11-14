@@ -221,6 +221,9 @@ class Service:
                                         port=node.port, region=node.region))
                         elif account.pk != pk:
                             old[node_id].latency = old[node_id].reachable = old[node_id].tested_at = None
+                        if node_id in old and old[node_id].region != node.region:
+                            # 早期解析失败时写进的 UNKNOWN 要能被后续正确的代号覆盖
+                            old[node_id].region = node.region
                     db.execute(delete(Node).where(Node.account_id == account_id, Node.id.not_in(ids)))
                     if account.pk != pk:
                         account.first_seen = now

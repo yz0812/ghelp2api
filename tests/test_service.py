@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.main import create_app
 from app.models import Account, Job, Node, ProxyCheck, Source, Subscription
-from app.security import hint
+from app.security import digest, hint
 from app.service import FAST_INTERVAL, FAST_WINDOW, PROBE_CONCURRENCY, proxy_key
 from app.upstream import Gateway, InvalidToken
 from tests.fixtures import FakeGateway
@@ -39,6 +39,29 @@ async def test_coalesce_refresh_and_persistence(settings):
         from sqlalchemy import select
         assert db.scalar(select(Job)).status == "interrupted"
     await second.stop()
+
+
+@pytest.mark.asyncio
+async def test_refresh_repairs_stale_unknown_region(settings):
+    """旧版本解析失败时写进的 UNKNOWN 地区，恢复正常解析后要被覆盖。"""
+    app = create_app(settings)
+    service = app.state.service
+    await service.gateway.close()
+    service.gateway = FakeGateway()
+    server = "aabbcc01-abc123-tp1cgt-w7lw.hkt.example.com"
+    with service.db.begin() as db:
+        account = Account(name="测试", token_cipher=service.secrets.encrypt("a" * 32),
+                          fingerprint=service.secrets.fingerprint("a" * 32), token_hint=hint("a" * 32))
+        db.add(account)
+        db.flush()
+        account_id = account.id
+        db.add(Node(id=digest(f"{account_id}:{server}:443"), account_id=account_id,
+                    server=server, port=443, region="UNKNOWN"))
+    await service.refresh(account_id)
+    with service.db() as db:
+        node = db.get(Node, digest(f"{account_id}:{server}:443"))
+        assert node.region == "HKT"
+    await service.stop()
 
 
 @pytest.mark.asyncio
