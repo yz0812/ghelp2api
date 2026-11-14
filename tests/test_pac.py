@@ -3,7 +3,7 @@ import yaml
 
 from app.clash import render
 from app.pac import parse_pac
-from tests.fixtures import PAC
+from tests.fixtures import PAC, PAC_NEW_MARKER
 
 
 def test_all_current_session_nodes():
@@ -11,6 +11,15 @@ def test_all_current_session_nodes():
     assert len(nodes) == 3
     assert {n.region for n in nodes} == {"HKT", "LOS", "GZCM1"}
     assert not degraded
+
+
+def test_new_marker_still_collects_every_node():
+    """上游改过域名中段（tnqw00-tp1cgt → tomdc0-ttrpst），不能只认出主列表的少数节点。"""
+    nodes, degraded = parse_pac(PAC_NEW_MARKER)
+    assert not degraded
+    assert len(nodes) == 4
+    assert {n.region for n in nodes} == {"VIPHUAWEI", "SJ11", "HK", "GZCM1"}
+    assert all("tomdc0-ttrpst-w7lw." in n.server for n in nodes)
 
 
 def test_fallback_and_bad_ports():

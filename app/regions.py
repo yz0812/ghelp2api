@@ -1,7 +1,7 @@
 """Readable labels for the region codes carried in PAC hostnames.
 
 The upstream PAC only encodes a coarse ingress/egress code in the second label of each
-node hostname (`<uuid>-<session>-tp1cgt-w7lw.<code>.<cdn>`), so these labels are our own
+node hostname (`<uuid>-<session>-<marker>-w7lw.<code>.<cdn>`), so these labels are our own
 translation, not data returned by GHelper.
 """
 

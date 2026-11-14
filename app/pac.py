@@ -19,21 +19,24 @@ def parse_pac(pac: str) -> tuple[list[Proxy], bool]:
     main = re.search(r"\b(?:var|let|const)\s+proxy\s*=\s*(['\"])(.*?)\1", pac, re.S)
     if not main:
         raise PacError("PAC 主节点格式无法识别")
-    code = re.search(r"-([a-z0-9]{6})-tp1cgt-w7lw\.", main[2], re.I)
-    source = pac if code else main[2]
+    # 节点域名形如 <uuid>-<会话号>-<标记>-w7lw.<入口代号>.<CDN>。后两段由上游按批次下发，
+    # 曾从 tnqw00-tp1cgt 换成 tomdc0-ttrpst：写死任何一段都会只认出主列表里的少数节点。
+    marker = re.search(r"-[a-z0-9]{6}-[a-z0-9]{6}-w7lw\.", main[2], re.I)
+    tag = marker.group(0).lower() if marker else None
+    source = pac if tag else main[2]
     candidates = re.finditer(r"\bHTTPS\s+([a-zA-Z0-9.-]+):(\d{1,6})(?!\d)", source, re.I)
     nodes: dict[tuple[str, int], Proxy] = {}
     for match in candidates:
         server, port = match[1].lower(), int(match[2])
-        if code and f"-{code[1].lower()}-tp1cgt-w7lw." not in server:
+        if tag and tag not in server:
             continue
         if not 1 <= port <= 65535 or len(server) > 253:
             continue
         if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", p)
                for p in server.split(".")):
             continue
-        region = server.split(".")[1].upper() if code else "UNKNOWN"
+        region = server.split(".")[1].upper() if tag else "UNKNOWN"
         nodes[(server, port)] = Proxy(server, port, region)
     if not nodes:
         raise PacError("PAC 中没有可用的 HTTPS 节点")
-    return list(nodes.values()), code is None
+    return list(nodes.values()), tag is None
