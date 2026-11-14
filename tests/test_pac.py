@@ -3,7 +3,7 @@ import yaml
 
 from app.clash import render
 from app.pac import parse_pac
-from tests.fixtures import PAC, PAC_NEW_MARKER
+from tests.fixtures import PAC, PAC_ALT_MARKER, PAC_NEW_MARKER
 
 
 def test_all_current_session_nodes():
@@ -19,7 +19,16 @@ def test_new_marker_still_collects_every_node():
     assert not degraded
     assert len(nodes) == 4
     assert {n.region for n in nodes} == {"VIPHUAWEI", "SJ11", "HK", "GZCM1"}
-    assert all("tomdc0-ttrpst-w7lw." in n.server for n in nodes)
+    assert all("tomdc0-ttrpst-" in n.server for n in nodes)
+
+
+def test_alt_fourth_segment_still_matches():
+    """第四段会从 w7lw 变成 1tuas，不能写死；同时别人的标记不能混进来。"""
+    nodes, degraded = parse_pac(PAC_ALT_MARKER)
+    assert not degraded
+    assert len(nodes) == 2
+    assert {n.region for n in nodes} == {"LOS", "HK"}
+    assert all("tomdc0-tqqfg1-" in n.server for n in nodes)
 
 
 def test_fallback_and_bad_ports():
