@@ -10,11 +10,9 @@ from sqlalchemy import delete, select, update
 
 from app.mihomo import DELAY_TIMEOUT, MihomoTester, MihomoUnavailable, available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
-from app.pac import PacError, parse_pac
-from app.regions import country as region_country
+from app.pac import PacError, official_names, parse_pac
 from app.regions import country_label as region_country_label
 from app.regions import detect as detect_country
-from app.regions import label as region_label
 from app.security import digest, hint
 from app.sources import Fetcher, SourceError
 from app.subscription import SubscriptionError, clean_name, parse_subscription, sanitize
@@ -209,6 +207,15 @@ class Service:
                 pk = proxy.get("pk")
                 if not isinstance(pk, str) or not pk:
                     raise UpstreamError("上游缺少会话标识")
+                names = None
+                try:
+                    metadata = await self.call(account_id, "/v3/servers/status")
+                    if isinstance(metadata.get("servers"), list):
+                        names = official_names(pac, metadata["servers"])
+                except InvalidToken:
+                    raise
+                except UpstreamError:
+                    pass  # 名称接口暂不可用不应阻止有效 PAC 更新。
                 with self.db.begin() as db:
                     account = db.get(Account, account_id)
                     old = {n.id: n for n in db.scalars(select(Node).where(Node.account_id == account_id))}
@@ -218,12 +225,15 @@ class Service:
                         ids.add(node_id)
                         if node_id not in old:
                             db.add(Node(id=node_id, account_id=account_id, server=node.server,
-                                        port=node.port, region=node.region))
+                                        port=node.port, region=node.region,
+                                        official_name=(names or {}).get((node.server, node.port))))
                         elif account.pk != pk:
                             old[node_id].latency = old[node_id].reachable = old[node_id].tested_at = None
                         if node_id in old and old[node_id].region != node.region:
                             # 早期解析失败时写进的 UNKNOWN 要能被后续正确的代号覆盖
                             old[node_id].region = node.region
+                        if node_id in old and (names is not None or account.pk != pk):
+                            old[node_id].official_name = (names or {}).get((node.server, node.port))
                     db.execute(delete(Node).where(Node.account_id == account_id, Node.id.not_in(ids)))
                     if account.pk != pk:
                         account.first_seen = now
@@ -532,12 +542,13 @@ class Service:
             if regions and node.region not in regions:
                 continue
             alias = re.sub(r"[\x00-\x1f\x7f]", "", account.name)[:40]
+            name = node.official_name or f"未识别出口（入口 {node.region}）-{digest(f'{node.server}:{node.port}')[:10]}"
             rows.append({
-                "proxy": {"name": f"{alias}-{region_label(node.region)}-{node.region}-{digest(f'{node.server}:{node.port}')[:10]}",
+                "proxy": {"name": f"{alias}-{name}",
                           "type": "http", "server": node.server, "port": node.port,
                           "tls": True, "skip-cert-verify": True, "udp": False},
                 "group": f"账号 · {alias} · {account.id[:8]}", "origin": f"账号 · {alias}",
-                "country": region_country(node.region),
+                "country": detect_country(node.official_name or "") or "UN",
                 "reachable": node.reachable, "latency": node.latency, "tested_at": node.tested_at})
         return rows
 

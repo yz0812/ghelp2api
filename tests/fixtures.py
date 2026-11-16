@@ -47,4 +47,6 @@ class FakeGateway:
         if path == "/v3/account":
             return {"account": {"email": "demo@example.invalid", "is_vip": True,
                                 "vip_date": "2027-01-01", "token": "must-not-leak"}}
+        if path == "/v3/servers/status":
+            return {"servers": []}
         return {"total": 1024}

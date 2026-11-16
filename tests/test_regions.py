@@ -42,3 +42,13 @@ def test_detect_ignores_unrelated_text():
     assert detect("plus-node") is None  # 小写单词里的 us 不算
     assert detect("") is None
     assert detect(None) is None
+
+
+def test_official_names_resolve_egress_countries():
+    for name, expected in {
+        "東京": "JP", "台北": "TW", "汉城": "KR", "奧尅蘭": "NZ", "孟買": "IN",
+        "新西伯利亚": "RU", "伊斯坦布爾": "TR", "Seattle 6G": "US",
+        "Silicon Valley 4G": "US", "Los Angeles[CM\\": "US", "US-ISP": "US",
+        "Mexico City": "MX", "Madrid": "ES", "香港01[CM]": "HK",
+    }.items():
+        assert detect(name) == expected

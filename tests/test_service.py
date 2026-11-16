@@ -14,6 +14,57 @@ from tests.fixtures import FakeGateway
 
 
 @pytest.mark.asyncio
+async def test_official_names_persist_export_and_handle_metadata_failure(settings):
+    from tests.fixtures import PAC
+    from app.upstream import UpstreamError
+
+    class NamedGateway(FakeGateway):
+        metadata_fail = False
+
+        async def request(self, token, path, **kwargs):
+            if path == "/session":
+                response = await super().request(token, path, **kwargs)
+                response["session"]["proxy"]["pac"]["value"]["pacScript"]["data"] = PAC + (
+                    "var test_proxy_domains={'30.95y.net':"
+                    "'HTTPS aabbcc03-abc123-tp1cgt-w7lw.gzcm1.example.com:15228'};")
+                return response
+            if path == "/v3/servers/status":
+                if self.metadata_fail:
+                    raise UpstreamError("模拟名称服务暂不可用")
+                return {"servers": [{"name": "東京", "ping_url": "https://30.95y.net/ping"}]}
+            return await super().request(token, path, **kwargs)
+
+    service = create_app(settings).state.service
+    await service.gateway.close()
+    service.gateway = NamedGateway()
+    with service.db.begin() as db:
+        account = Account(name="账号", token_cipher=service.secrets.encrypt("a" * 32),
+                          fingerprint=service.secrets.fingerprint("a" * 32), token_hint=hint("a" * 32))
+        db.add(account)
+        db.flush()
+        account_id = account.id
+    assert await service.refresh(account_id) is None
+    with service.db() as db:
+        node = db.scalar(select(Node).where(Node.region == "GZCM1"))
+        assert node.official_name == "東京"
+    rows = service._ghelper_rows([account_id], [], time.time())
+    named = next(r for r in rows if r["proxy"]["port"] == 15228)
+    assert named["proxy"]["name"] == "账号-東京"
+    assert named["country"] == "JP"
+    unknown = next(r for r in rows if r["proxy"]["port"] == 8443)
+    assert "未识别出口" in unknown["proxy"]["name"]
+    assert unknown["country"] == "UN"
+    # 名称接口暂不可用：同一会话保留已确认名称；换会话后清除旧名称。
+    service.gateway.metadata_fail = True
+    assert await service.refresh(account_id) is None
+    assert any(r["proxy"]["name"] == "账号-東京" for r in service._ghelper_rows([account_id], [], time.time()))
+    service.gateway.pk = "synthetic-session-2"
+    assert await service.refresh(account_id) is None
+    assert all("未识别出口" in r["proxy"]["name"] for r in service._ghelper_rows([account_id], [], time.time()))
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_coalesce_refresh_and_persistence(settings):
     app = create_app(settings)
     service = app.state.service
@@ -28,7 +79,7 @@ async def test_coalesce_refresh_and_persistence(settings):
     tasks = [service.ensure_refresh(account_id) for _ in range(8)]
     assert all(t is tasks[0] for t in tasks)
     await asyncio.gather(*tasks)
-    assert len(service.gateway.calls) == 3
+    assert len(service.gateway.calls) == 4
     with service.db.begin() as db:
         db.add(Job(kind="probe", status="running", total=5))
     await service.stop()

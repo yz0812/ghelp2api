@@ -242,6 +242,7 @@ def create_app(settings: Settings | None = None):
         with db_factory() as db:
             return [{"id": n.id, "account_id": a.id, "account_name": a.name, "server": n.server,
                      "port": n.port, "region": n.region, "region_label": region_label(n.region),
+                     "official_name": n.official_name,
                      "latency": n.latency, "reachable": n.reachable,
                      "tested_at": n.tested_at, "enabled": a.enabled,
                      "stale": not a.last_success or time.time() - a.last_success > 3600}

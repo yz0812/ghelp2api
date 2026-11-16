@@ -20,7 +20,7 @@ const pageSize = ref(20)
 const filtered = computed(() => nodes.value.filter(n =>
   (!accountFilter.value || n.account_id === accountFilter.value) &&
   (!regionFilter.value || n.region === regionFilter.value) &&
-  (!search.value || `${n.server} ${n.account_name} ${n.region} ${n.region_label}`.toLowerCase().includes(search.value.toLowerCase())) &&
+  (!search.value || `${n.official_name || ''} ${n.server} ${n.account_name} ${n.region} ${n.region_label}`.toLowerCase().includes(search.value.toLowerCase())) &&
   (!statusFilter.value || (statusFilter.value === 'ok' ? n.reachable === true : statusFilter.value === 'failed' ? n.reachable === false : n.reachable === null))))
 
 const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
@@ -42,7 +42,7 @@ async function probe() {
 </script>
 
 <template>
-  <PageHeading title="节点列表" subtitle="查看入口与连通性，找到适合当前网络的节点。" />
+  <PageHeading title="节点列表" subtitle="查看官方线路名称、入口与连通性，找到适合当前网络的节点。" />
   <RunningBanner :running="running.length > 0" />
 
   <section class="panel">
@@ -65,6 +65,9 @@ async function probe() {
     </div>
     <el-table :data="paged" row-key="id" max-height="100vh - 470px" @selection-change="(v: Node[]) => selectedNodes = v" empty-text="暂无节点，请先添加账号并刷新" v-loading="loading">
       <el-table-column type="selection" width="42" reserve-selection />
+      <el-table-column label="官方线路名称" prop="official_name" min-width="180" sortable>
+        <template #default="{ row }">{{ row.official_name || '未识别出口' }}</template>
+      </el-table-column>
       <el-table-column label="入口" prop="region" width="140" sortable>
         <template #default="{ row }">{{ regionText(row.region) }}</template>
       </el-table-column>

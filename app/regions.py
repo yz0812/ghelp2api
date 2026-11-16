@@ -63,6 +63,8 @@ UNKNOWN = ("未知", "UN")
 
 # 节点名里常见的城市/别名（机场常用城市而不是国家命名），归到所属国家。
 CITIES: dict[str, str] = {
+    "東京": "JP", "汉城": "KR", "新西伯利亚": "RU",
+    "奧尅蘭": "NZ", "伊斯坦布爾": "TR", "孟買": "IN",
     "台北": "TW", "东京": "JP", "大阪": "JP", "名古屋": "JP", "埼玉": "JP", "首尔": "KR", "釜山": "KR",
     "纽约": "US", "芝加哥": "US", "达拉斯": "US", "硅谷": "US", "凤凰城": "US", "迈阿密": "US",
     "拉斯维加斯": "US", "波特兰": "US", "亚特兰大": "US", "阿什本": "US", "丹佛": "US", "圣克拉拉": "US",
@@ -72,6 +74,12 @@ CITIES: dict[str, str] = {
     "米兰": "IT", "罗马": "IT", "马德里": "ES", "苏黎世": "CH", "都柏林": "IE", "斯德哥尔摩": "SE",
     "华沙": "PL", "特拉维夫": "IL", "伊斯坦布尔": "TR", "胡志明": "VN", "河内": "VN", "曼谷": "TH",
     "吉隆坡": "MY", "雅加达": "ID", "马尼拉": "PH", "墨西哥城": "MX", "布宜诺斯艾利斯": "AR",
+}
+
+# 官方线路使用的英文地名，按单词边界匹配，避免将普通单词误识别为地区。
+ENGLISH_CITIES = {
+    "Seattle": "US", "Silicon Valley": "US", "Los Angeles": "US",
+    "Mexico City": "MX", "Madrid": "ES",
 }
 
 # 节点名里会被当作国家代号识别的两字母代码（含 REGIONS 未收录但机场常用的）。
@@ -136,7 +144,7 @@ def detect(name: str) -> str | None:
     """从订阅源节点名猜国家：国旗 → 中英文地名 → 独立的两字母代号；猜不出返回 None。
 
     机场的节点名没有统一格式，这里只做保守识别：宁可归入「未知」，也不把
-    名字里偶然出现的字母当成国家。GHelper 节点不走这里，直接用自己的地区代号。
+    名字里偶然出现的字母当成国家。GHelper 节点使用官方线路名称，不使用入口代号。
     """
     if not isinstance(name, str) or not name:
         return None
@@ -149,6 +157,9 @@ def detect(name: str) -> str | None:
             best = ((-len(text), index), code)
     if best:
         return best[1]
+    for text, code in ENGLISH_CITIES.items():
+        if re.search(r"\b" + re.escape(text) + r"\b", name, re.I):
+            return code
     if found := next((t for t in re.findall(r"(?<![A-Za-z0-9])[A-Z]{2}(?![A-Za-z0-9])", name)
                       if t in CODES), None):
         return found

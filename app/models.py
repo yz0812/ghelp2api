@@ -42,6 +42,7 @@ class Node(Base):
     server: Mapped[str] = mapped_column(Text)
     port: Mapped[int]
     region: Mapped[str] = mapped_column(String(80))
+    official_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     latency: Mapped[float | None] = mapped_column(Float, nullable=True)
     reachable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     tested_at: Mapped[float | None] = mapped_column(Float, nullable=True)

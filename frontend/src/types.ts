@@ -6,7 +6,7 @@ export interface Account {
 }
 export interface Node {
   id: string; account_id: string; account_name: string; server: string; port: number; region: string;
-  region_label: string;
+  region_label: string; official_name: string | null;
   latency: number | null; reachable: boolean | null; tested_at: number | null; enabled: boolean; stale: boolean;
 }
 export interface Subscription {

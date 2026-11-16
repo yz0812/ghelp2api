@@ -1,5 +1,7 @@
+import ast
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -11,6 +13,38 @@ class Proxy:
 
 class PacError(ValueError):
     pass
+
+
+def official_names(pac: str, servers: list) -> dict[tuple[str, int], str]:
+    """按测速域名关联官方名称；只使用 PAC 内明确给出的代理地址，不按入口猜测。"""
+    match = re.search(r"\b(?:var|let|const)\s+test_proxy_domains\s*=\s*(\{[^{}]*\})\s*;", pac)
+    if not match or not isinstance(servers, list):
+        return {}
+    try:
+        routes = ast.literal_eval(match[1])
+    except (ValueError, SyntaxError, RecursionError):
+        return {}
+    if not isinstance(routes, dict):
+        return {}
+    names: dict[tuple[str, int], set[str]] = {}
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        name, ping_url = server.get("name"), server.get("ping_url")
+        if not isinstance(name, str) or not isinstance(ping_url, str):
+            continue
+        name = re.sub(r"[\x00-\x1f\x7f]", "", name).strip()[:160]
+        try:
+            host = urlsplit(ping_url).hostname
+        except ValueError:
+            continue
+        route = routes.get(host)
+        if not name or not isinstance(route, str):
+            continue
+        for target, port in re.findall(r"\bHTTPS\s+([a-zA-Z0-9.-]+):(\d{1,6})(?!\d)", route, re.I):
+            names.setdefault((target.lower(), int(port)), set()).add(name)
+    # 同一代理关联多个不同名称时无法确定出口，保留未知状态。
+    return {key: next(iter(values)) for key, values in names.items() if len(values) == 1}
 
 
 def parse_pac(pac: str) -> tuple[list[Proxy], bool]:
