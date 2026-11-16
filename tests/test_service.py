@@ -49,15 +49,16 @@ async def test_official_names_persist_export_and_handle_metadata_failure(setting
         assert node.official_name == "東京"
     rows = service._ghelper_rows([account_id], [], time.time())
     named = next(r for r in rows if r["proxy"]["port"] == 15228)
-    assert named["proxy"]["name"] == "账号-東京"
+    assert named["proxy"]["name"] == "账号-🇯🇵 東京"
     assert named["country"] == "JP"
     unknown = next(r for r in rows if r["proxy"]["port"] == 8443)
     assert "未识别出口" in unknown["proxy"]["name"]
     assert unknown["country"] == "UN"
+    assert "🇺🇳" in unknown["proxy"]["name"]
     # 名称接口暂不可用：同一会话保留已确认名称；换会话后清除旧名称。
     service.gateway.metadata_fail = True
     assert await service.refresh(account_id) is None
-    assert any(r["proxy"]["name"] == "账号-東京" for r in service._ghelper_rows([account_id], [], time.time()))
+    assert any(r["proxy"]["name"] == "账号-🇯🇵 東京" for r in service._ghelper_rows([account_id], [], time.time()))
     service.gateway.pk = "synthetic-session-2"
     assert await service.refresh(account_id) is None
     assert all("未识别出口" in r["proxy"]["name"] for r in service._ghelper_rows([account_id], [], time.time()))

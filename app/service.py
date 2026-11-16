@@ -13,6 +13,7 @@ from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck,
 from app.pac import PacError, official_names, parse_pac
 from app.regions import country_label as region_country_label
 from app.regions import detect as detect_country
+from app.regions import flag as country_flag
 from app.security import digest, hint
 from app.sources import Fetcher, SourceError
 from app.subscription import SubscriptionError, clean_name, parse_subscription, sanitize
@@ -543,12 +544,16 @@ class Service:
                 continue
             alias = re.sub(r"[\x00-\x1f\x7f]", "", account.name)[:40]
             name = node.official_name or f"未识别出口（入口 {node.region}）-{digest(f'{node.server}:{node.port}')[:10]}"
+            country = detect_country(node.official_name or "") or "UN"
+            emoji = country_flag(country)
+            if emoji not in name:
+                name = f"{emoji} {name}"
             rows.append({
                 "proxy": {"name": f"{alias}-{name}",
                           "type": "http", "server": node.server, "port": node.port,
                           "tls": True, "skip-cert-verify": True, "udp": False},
                 "group": f"账号 · {alias} · {account.id[:8]}", "origin": f"账号 · {alias}",
-                "country": detect_country(node.official_name or "") or "UN",
+                "country": country,
                 "reachable": node.reachable, "latency": node.latency, "tested_at": node.tested_at})
         return rows
 
