@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Key, Plus, Refresh } from '@element-plus/icons-vue'
+import { Key, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import ActionMenu from '../components/ActionMenu.vue'
+import FilterBar from '../components/FilterBar.vue'
+import EmptyState from '../components/EmptyState.vue'
 import PageHeading from '../components/PageHeading.vue'
 import AccountImportDialog from '../components/AccountImportDialog.vue'
 import AccountEditDialog from '../components/AccountEditDialog.vue'
@@ -11,6 +14,16 @@ import { accounts, action, busy, load, running, schedulePoll, stateLabel } from 
 import { bytes, time } from '../utils'
 import type { Account } from '../types'
 
+const search = ref('')
+const status = ref('')
+const page = ref(1)
+const pageSize = 12
+const filtered = computed(() => accounts.value.filter(a =>
+  (!search.value || (a.name + ' ' + (a.info.email || '')).toLowerCase().includes(search.value.toLowerCase())) &&
+  (!status.value || (status.value === 'disabled' ? !a.enabled : status.value === 'error' ? a.enabled && ['invalid', 'error'].includes(a.status) : a.enabled && a.status === status.value))))
+const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch([search, status], () => { page.value = 1 })
+watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize))) })
 const router = useRouter()
 const importVisible = ref(false)
 const editVisible = ref(false)
@@ -54,17 +67,24 @@ async function remove(account: Account) {
     <el-button type="primary" :icon="Plus" @click="importVisible = true">添加账号</el-button>
   </PageHeading>
 
-  <div class="toolbar">
-    <span class="muted">共 {{ accounts.length }} 个账号</span>
-    <el-button :icon="Refresh" :disabled="!accounts.length" :loading="busy" @click="refreshAll">刷新全部</el-button>
-  </div>
+  <FilterBar>
+    <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索账号名称或邮箱" aria-label="搜索账号" />
+    <el-select v-model="status" clearable placeholder="全部状态" aria-label="账号状态">
+      <el-option label="已就绪" value="ready" /><el-option label="等待获取" value="pending" /><el-option label="异常" value="error" /><el-option label="已停用" value="disabled" />
+    </el-select>
+    <template #actions><span class="muted">{{ filtered.length }} / {{ accounts.length }} 个账号</span>
+      <el-button :icon="Refresh" :disabled="!accounts.length" :loading="busy" @click="refreshAll">刷新全部</el-button>
+    </template>
+  </FilterBar>
 
-  <el-empty v-if="!accounts.length" description="粘贴 token 或导入本地脚本生成的 JSON">
+
+  <EmptyState v-if="!accounts.length" title="还没有账号" description="粘贴 token 或导入本地脚本生成的 JSON。">
     <el-button type="primary" @click="importVisible = true">添加账号</el-button>
-  </el-empty>
+  </EmptyState>
+  <EmptyState v-else-if="!filtered.length" title="没有符合条件的账号" description="试试其他名称或清空筛选条件。"><el-button @click="search = ''; status = ''">清空筛选</el-button></EmptyState>
 
   <div class="account-grid">
-    <article v-for="a in accounts" :key="a.id" class="panel account-card">
+    <article v-for="a in paged" :key="a.id" class="panel account-card">
       <div class="card-top">
         <div class="account-avatar"><el-icon><Key /></el-icon></div>
         <div class="grow">
@@ -92,12 +112,14 @@ async function remove(account: Account) {
       <div class="card-actions">
         <el-button :loading="busy" :disabled="!a.enabled || a.status === 'invalid' || running.some(j => j.kind === 'refresh')" @click="refreshOne(a)">刷新</el-button>
         <el-button @click="edit(a)">编辑</el-button>
-        <el-button type="primary" plain @click="router.push({ name: 'subscriptions', query: { account: a.id } })">生成订阅</el-button>
-        <el-button text type="danger" @click="remove(a)">删除</el-button>
+        <ActionMenu :disabled="busy" :items="[{ key: 'generate', label: '生成订阅' }, { key: 'remove', label: '删除账号', danger: true, divided: true }]" @select="key => key === 'generate' ? router.push({ name: 'subscriptions', query: { account: a.id } }) : remove(a)" />
       </div>
     </article>
   </div>
 
+  <div v-if="filtered.length > pageSize" class="table-footer">
+    <span>{{ filtered.length }} 个账号</span><el-pagination v-model:current-page="page" :page-size="pageSize" :pager-count="5" :total="filtered.length" background layout="prev, pager, next" />
+  </div>
   <AccountImportDialog v-model:open="importVisible" />
   <AccountEditDialog v-model:open="editVisible" :account="editing" />
 </template>

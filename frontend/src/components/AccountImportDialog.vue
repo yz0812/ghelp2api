@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import FormError from './FormError.vue'
 import { api } from '../api'
-import { accounts, action, busy, load } from '../store'
+import { accounts, action, busy, clearError, load } from '../store'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
@@ -24,6 +25,7 @@ async function readFile(event: Event) {
 }
 
 async function submit() {
+  if (busy.value) return
   await action(async () => {
     const raw = text.value.trim()
     let entries: any[]
@@ -46,7 +48,8 @@ async function submit() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="添加账号" width="580px" @closed="text = ''">
+  <el-dialog v-model="visible" title="添加账号" width="580px" @open="clearError" @closed="text = ''">
+    <FormError />
     <p class="muted">每行一个 token，也可填写「名称,token」或粘贴导出 JSON。</p>
     <el-input v-model="text" type="textarea" :rows="8" placeholder="账号 A,32 位 token&#10;账号 B,32 位 token" aria-label="批量 token" autocomplete="off" />
     <label class="file-picker">导入本地 JSON <input type="file" accept=".json,application/json" @change="readFile" /></label>

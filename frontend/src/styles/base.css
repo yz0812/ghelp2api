@@ -1,0 +1,37 @@
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; }
+body { margin: 0; color: var(--ink); background: var(--page); font-size: 14px; overflow-x: clip; }
+button, input { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: 26px; font-weight: 650; letter-spacing: -.6px; margin-bottom: 8px; }
+h2 { font-size: 16px; font-weight: 650; margin-bottom: 6px; }
+h3 { font-size: 14px; font-weight: 650; }
+p { line-height: 1.7; }
+code, pre { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.muted { color: var(--muted); font-size: 13px; }
+.eyebrow { font-size: 11px; letter-spacing: 2px; font-weight: 650; color: var(--subtle); display: block; margin-bottom: 12px; }
+.mb { margin-bottom: 16px; }
+.mt { margin-top: 16px; }
+.full { width: 100%; }
+.grow { flex: 1; min-width: 0; }
+.text-link { display: inline-flex; align-items: center; gap: 4px; border: 0; padding: 0; background: transparent; color: var(--accent); font-size: 13px; text-decoration: none; font-weight: 500; }
+.text-link:hover { text-decoration: underline; }
+.danger-text { color: var(--danger); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.skip-link { position: fixed; left: 16px; top: -100px; background: var(--surface); padding: 12px; z-index: 3000; }
+.skip-link:focus { top: 12px; }
+.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; margin-right: 7px; }
+.note { margin: 20px 0 0; color: var(--muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.field-hint { display: block; width: 100%; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.field-label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.boot { min-height: 100dvh; display: flex; justify-content: center; align-items: center; flex-direction: column; gap: 20px; }
+.boot p { margin: 0; color: var(--muted); }
+.boot-skeleton { max-width: 260px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

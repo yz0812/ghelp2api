@@ -35,3 +35,18 @@ export interface Preferences {
 }
 
 export interface Chain { id: string; name: string; entry_id: string; exit_id: string; enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; status: { state: string; error?: string; current_entry?: string; latency?: number } }
+
+export type ThemePreference = 'light' | 'dark' | 'system'
+export interface Entry {
+  id: string; name: string; subscription_id: string; mode: 'auto' | 'fixed'; node_key: string | null; enabled: boolean;
+}
+export interface Exit {
+  id: string; name: string; type: 'http' | 'https' | 'socks5'; server: string; port: number;
+  username?: string; tls?: boolean; enabled: boolean; has_password: boolean;
+}
+export interface ConnectionInfo {
+  host: string; port: number; username: string; password: string; protocols: string[];
+}
+export interface MenuAction {
+  key: string; label: string; danger?: boolean; disabled?: boolean; divided?: boolean;
+}

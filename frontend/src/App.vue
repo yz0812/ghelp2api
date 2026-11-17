@@ -1,78 +1,69 @@
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Connection, Files, Grid, Key, Link, Setting, SwitchButton, Tickets } from '@element-plus/icons-vue'
-import { accounts, booting, error, expire, logout, settings } from './store'
+import { Connection, Expand, Fold, Menu, SwitchButton } from '@element-plus/icons-vue'
+import { booting, expire, logout, settings } from './store'
+import AppNavigation from './components/AppNavigation.vue'
+import ThemeSwitcher from './components/ThemeSwitcher.vue'
+import FormError from './components/FormError.vue'
+import { useMediaQuery } from './composables/useMediaQuery'
 
 const router = useRouter()
 const route = useRoute()
 const contentRef = ref<HTMLElement>()
-
-const nav = [
-  { name: 'overview', label: '连接总览', icon: Grid },
-  { name: 'accounts', label: '账号管理', icon: Key },
-  { name: 'nodes', label: '节点列表', icon: Connection },
-  { name: 'sources', label: '订阅源', icon: Files },
-  { name: 'chains', label: '入口与出口', icon: Connection },
-  { name: 'subscriptions', label: '订阅管理', icon: Link },
-  { name: 'jobs', label: '任务记录', icon: Tickets },
-  { name: 'settings', label: '系统设置', icon: Setting }
-]
-
+const mobileNav = ref(false)
+const compact = ref(false)
+try { compact.value = localStorage.getItem('ghelper.sidebar') === 'compact' } catch {}
+const mobile = useMediaQuery('(max-width: 767px)')
 const layout = () => ['login', 'not-found'].includes(String(route.name))
-watch(() => route.fullPath, () => contentRef.value?.scrollTo({ top: 0 }))
+watch(() => route.fullPath, () => { contentRef.value?.scrollTo({ top: 0 }); mobileNav.value = false })
+watch(mobile, () => { mobileNav.value = false })
 
-function onExpired() { expire(); router.push({ name: 'login' }) }
-async function signOut() {
-  await logout()
-  router.push({ name: 'login' })
+function toggleSidebar() {
+  compact.value = !compact.value
+  try { localStorage.setItem('ghelper.sidebar', compact.value ? 'compact' : 'expanded') } catch {}
 }
+function onExpired() { expire(); router.push({ name: 'login' }) }
+async function signOut() { await logout(); router.push({ name: 'login' }) }
 window.addEventListener('session-expired', onExpired)
 onUnmounted(() => window.removeEventListener('session-expired', onExpired))
 </script>
 
 <template>
-  <div v-if="booting" class="boot">
-    <el-icon class="is-loading" :size="32"><Connection /></el-icon>
+  <div v-if="booting" class="boot" role="status">
+    <span class="brand-mark"><el-icon><Connection /></el-icon></span>
     <p>正在加载管理台</p>
+    <el-skeleton :rows="3" animated class="boot-skeleton" />
   </div>
   <router-view v-else-if="layout()" />
-  <div v-else class="layout">
+  <div v-else :class="['layout', { 'is-compact': compact }]">
+    <a href="#main-content" class="skip-link">跳转到主要内容</a>
     <aside class="sidebar">
-      <router-link :to="{ name: 'overview' }" class="brand">
-        <el-icon><Connection /></el-icon> GHelper<span class="brand-small">WEB</span>
+      <router-link :to="{ name: 'overview' }" class="brand" aria-label="GHelper 首页">
+        <span class="brand-mark"><el-icon><Connection /></el-icon></span><span class="brand-name">GHelper<small>连接管理台</small></span>
       </router-link>
-      <div class="nav-caption">工作空间</div>
-      <nav aria-label="主导航">
-        <router-link
-          v-for="item in nav" :key="item.name"
-          :to="{ name: item.name }"
-          :class="['nav-item', { active: route.name === item.name }]"
-          :aria-label="item.label"
-        >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-          <span v-if="item.name === 'accounts'" class="nav-count">{{ accounts.length }}</span>
-        </router-link>
-      </nav>
-      <div class="sidebar-bottom">
-        <span class="status-dot"></span> 独立部署 · 数据本地保存
-        <p>GHelper Clash Web {{ settings.version || '—' }}</p>
-      </div>
+      <AppNavigation />
+      <div class="sidebar-bottom"><span class="status-dot" /><span class="sidebar-note">本地工作空间<small>v{{ settings.version || '—' }}</small></span></div>
     </aside>
     <div class="workspace">
       <header class="topbar">
-        <div class="breadcrumb">工作空间 <span>/</span> <strong>{{ route.meta.label }}</strong></div>
+        <div class="top-location">
+          <el-button v-if="mobile" text :icon="Menu" aria-label="打开导航" @click="mobileNav = true" />
+          <el-button v-else class="sidebar-toggle" text :icon="compact ? Expand : Fold" :aria-label="compact ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar" />
+          <div class="breadcrumb"><span class="breadcrumb-root">工作空间 <span>/</span></span><strong>{{ route.meta.label }}</strong></div>
+        </div>
         <div class="top-actions">
-          <span class="admin-badge">A</span><span>管理员</span>
+          <ThemeSwitcher /><span class="top-divider" /><span class="admin-badge" aria-label="管理员">A</span>
           <el-button text :icon="SwitchButton" @click="signOut">退出</el-button>
         </div>
       </header>
-      <main ref="contentRef" class="content">
-        <el-alert v-if="error" :title="error" type="error" show-icon role="alert" class="mb" @close="error = ''" />
-        <router-view />
+      <main id="main-content" ref="contentRef" class="content" tabindex="-1">
+        <FormError /><router-view />
+        <footer class="page-footer"><span>GHelper · 连接由你掌控</span><span>数据保存在本地</span></footer>
       </main>
-      <footer class="page-footer">GHelper Clash Web <span>连接由你掌控</span></footer>
     </div>
+    <el-drawer v-model="mobileNav" title="工作空间" direction="ltr" size="min(280px, 88vw)" class="navigation-drawer">
+      <AppNavigation @navigate="mobileNav = false" />
+    </el-drawer>
   </div>
 </template>

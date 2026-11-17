@@ -1,16 +1,33 @@
 <script setup lang="ts">
+import { computed, reactive, ref, watch } from 'vue'
+import { Monitor, Moon, Sunny } from '@element-plus/icons-vue'
+import { useTheme } from '../composables/useTheme'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import PageHeading from '../components/PageHeading.vue'
 import { action, busy, settings } from '../store'
 
+const { preference, setTheme } = useTheme()
+const themes = [{ value: 'light' as const, label: '浅色主题', icon: Sunny }, { value: 'dark' as const, label: '深色主题', icon: Moon }, { value: 'system' as const, label: '跟随系统', icon: Monitor }]
+const form = reactive({ refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms })
+const baseline = ref(JSON.stringify(form))
+const dirty = computed(() => JSON.stringify(form) !== baseline.value)
+watch(() => [settings.refresh_minutes, settings.probe_minutes, settings.probe_timeout_ms], () => {
+  if (dirty.value) return
+  Object.assign(form, { refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms })
+  baseline.value = JSON.stringify(form)
+})
+
 async function save() {
+  if (busy.value) return
   await action(async () => {
     await api('/settings', 'PUT', {
-      refresh_minutes: settings.refresh_minutes,
-      probe_minutes: settings.probe_minutes,
-      probe_timeout_ms: settings.probe_timeout_ms
+      refresh_minutes: form.refresh_minutes,
+      probe_minutes: form.probe_minutes,
+      probe_timeout_ms: form.probe_timeout_ms
     })
+    Object.assign(settings, form)
+    baseline.value = JSON.stringify(form)
     ElMessage.success('设置已保存')
   })
 }
@@ -20,21 +37,31 @@ async function save() {
   <PageHeading title="系统设置" subtitle="调整获取频率，查看当前部署信息。" />
 
   <section class="panel settings-panel">
+    <div class="settings-block">
+      <h2>外观偏好</h2><p class="muted">选择适合你的界面，立即生效并保存在当前浏览器。</p>
+      <div class="appearance-options" role="group" aria-label="主题偏好">
+        <button v-for="theme in themes" :key="theme.value" type="button" :class="['appearance-option', { selected: preference === theme.value }]" :aria-pressed="preference === theme.value" @click="setTheme(theme.value)">
+          <el-icon><component :is="theme.icon" /></el-icon>{{ theme.label }}
+        </button>
+      </div>
+    </div>
+  </section>
+  <section class="panel settings-panel">
     <el-form label-position="top" @submit.prevent="save">
       <div class="settings-block">
         <h2>获取与测速</h2>
         <p class="muted">自动刷新只查询当前会话，不能强制上游签发新节点。</p>
         <div class="settings-grid">
           <el-form-item label="自动刷新间隔（分钟）">
-            <el-input-number v-model="settings.refresh_minutes" :min="5" :max="30" class="full" />
+            <el-input-number v-model="form.refresh_minutes" :min="5" :max="30" class="full" />
             <small class="field-hint">5–30 分钟</small>
           </el-form-item>
           <el-form-item label="定时测速间隔（分钟）">
-            <el-input-number v-model="settings.probe_minutes" :min="5" :max="60" class="full" />
+            <el-input-number v-model="form.probe_minutes" :min="5" :max="60" class="full" />
             <small class="field-hint">仅对开启「去除不可用」「最大延迟」「每国保留节点数」的订阅生效</small>
           </el-form-item>
           <el-form-item label="单节点测速超时（毫秒）">
-            <el-input-number v-model="settings.probe_timeout_ms" :min="1000" :max="10000" :step="500" class="full" />
+            <el-input-number v-model="form.probe_timeout_ms" :min="1000" :max="10000" :step="500" class="full" />
             <small class="field-hint">超时判为不可用；调大减少误判，但整轮更慢</small>
           </el-form-item>
         </div>
@@ -44,6 +71,7 @@ async function save() {
         </div>
         <div class="settings-actions">
           <el-button type="primary" native-type="submit" :loading="busy">保存设置</el-button>
+          <span v-if="dirty" class="muted"> 有尚未保存的更改</span>
         </div>
       </div>
     </el-form>

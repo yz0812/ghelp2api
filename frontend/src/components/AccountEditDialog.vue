@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import FormError from './FormError.vue'
 import { api } from '../api'
-import { action, busy, load } from '../store'
+import { action, busy, clearError, load } from '../store'
 import type { Account } from '../types'
 
 const props = defineProps<{ open: boolean, account: Account | null }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const form = reactive({ name: '', token: '', enabled: true })
 
-watch(() => props.account, account => {
-  if (account) Object.assign(form, { name: account.name, token: '', enabled: account.enabled })
+watch(() => [props.open, props.account?.id], () => {
+  const account = props.account
+  if (props.open && account) {
+    clearError()
+    Object.assign(form, { name: account.name, token: '', enabled: account.enabled })
+  }
 }, { immediate: true })
 
 async function submit() {
-  if (!props.account) return
+  if (!props.account || busy.value) return
   await action(async () => {
     await api(`/accounts/${props.account!.id}`, 'PATCH', {
       name: form.name,
@@ -30,6 +35,7 @@ async function submit() {
 
 <template>
   <el-dialog :model-value="open" title="编辑账号" width="500px" @update:model-value="emit('update:open', $event)" @closed="form.token = ''">
+    <FormError />
     <el-form label-position="top">
       <el-form-item label="账号名称">
         <el-input v-model="form.name" maxlength="80" />

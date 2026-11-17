@@ -4,6 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Download, Link, Plus, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import { api } from '../api'
+import ActionMenu from '../components/ActionMenu.vue'
+import AppDrawer from '../components/AppDrawer.vue'
+import EmptyState from '../components/EmptyState.vue'
+import FormError from '../components/FormError.vue'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
 import SubscriptionDetailDialog from '../components/SubscriptionDetailDialog.vue'
@@ -14,6 +18,7 @@ import type { Subscription } from '../types'
 const route = useRoute()
 const router = useRouter()
 const visible = ref(false)
+const advanced = ref<string[]>([])
 const previewVisible = ref(false)
 const preview = ref('')
 const detailVisible = ref(false)
@@ -52,11 +57,13 @@ function resetForm(accountId?: string) {
 }
 
 function create(accountId?: string) {
+  advanced.value = []
   resetForm(accountId)
   visible.value = true
 }
 
 function edit(s: Subscription) {
+  advanced.value = s.regions.length || s.exclude_failed || !s.dedupe || s.max_latency || s.max_per_country ? ['filters'] : []
   Object.assign(form, { ...s, chain_ids: [...s.chain_ids], account_ids: [...s.account_ids], source_ids: [...s.source_ids], regions: [...s.regions] })
   visible.value = true
 }
@@ -69,6 +76,7 @@ watch([() => route.query.account, accounts], ([accountId]) => {
 }, { immediate: true })
 
 async function save() {
+  if (busy.value || !form.name.trim() || (!form.account_ids.length && !form.source_ids.length && !form.chain_ids.length)) return
   await action(async () => {
     const { id, name, account_ids, source_ids, chain_ids, chain_mode, regions: regionList, exclude_failed, dedupe, max_latency, max_per_country, enabled } = form
     await api(id ? `/subscriptions/${id}` : '/subscriptions', id ? 'PUT' : 'POST', {
@@ -149,9 +157,9 @@ const conditionText = (s: Subscription) =>
   </PageHeading>
   <RunningBanner :running="running.length > 0" />
 
-  <el-empty v-if="!subscriptions.length" description="创建第一个订阅，将节点交给 Clash 自动管理">
+  <EmptyState v-if="!subscriptions.length" title="一个订阅，连接所有来源" description="组合账号、外部订阅源和代理链路，交给客户端自动更新。">
     <el-button type="primary" :disabled="!accounts.length && !sources.length && !chains.length" @click="create()">创建订阅</el-button>
-  </el-empty>
+  </EmptyState>
 
   <div class="subscription-grid">
     <article v-for="s in subscriptions" :key="s.id" class="panel sub-card">
@@ -160,13 +168,15 @@ const conditionText = (s: Subscription) =>
         <div class="grow">
           <h2>{{ s.name }}</h2>
           <p class="muted">
-            {{ s.account_ids.length }} 个账号 · {{ s.source_ids.length }} 个订阅源 ·
+            {{ s.account_ids.length }} 个账号 · {{ s.source_ids.length }} 个订阅源 · {{ s.chain_ids.length }} 条链路 ·
             {{ s.regions.length ? s.regions.map(regionText).join(' / ') : '全部入口' }}<template v-if="conditionText(s)"> · {{ conditionText(s) }}</template>
           </p>
         </div>
         <el-tag :type="s.enabled ? 'success' : 'info'">{{ s.enabled ? '已启用' : '已停用' }}</el-tag>
       </div>
       <div class="source-tags">
+        <el-tag v-for="id in s.chain_ids" :key="'chain-' + id" effect="plain">{{ chains.find(c => c.id === id)?.name || '已删除链路' }}</el-tag>
+        <el-tag v-if="s.chain_ids.length" type="warning" effect="plain">{{ s.chain_mode === 'native' ? '原生链路' : '服务器中转' }}</el-tag>
         <el-tag v-for="id in s.account_ids" :key="id" type="info" effect="plain">{{ accounts.find(a => a.id === id)?.name || '已删除账号' }}</el-tag>
         <el-tag v-for="id in visibleSources(s)" :key="id" type="success" effect="plain">{{ sources.find(x => x.id === id)?.name || '已删除订阅源' }}</el-tag>
         <el-button v-if="s.source_ids.length" class="tag-more" text size="small" @click="toggleSources(s.id)">
@@ -181,22 +191,27 @@ const conditionText = (s: Subscription) =>
       <div class="card-actions">
         <el-button type="primary" plain :icon="Connection" @click="openDetail(s)">节点详情</el-button>
         <el-button :icon="Refresh" :loading="busy" :disabled="!s.enabled" @click="refresh(s)">刷新订阅</el-button>
-        <el-button :icon="Download" :disabled="!s.enabled" @click="showConfig(s)">预览 / 下载</el-button>
-        <el-button text @click="edit(s)">编辑</el-button>
-        <el-button text @click="rotate(s)">轮换密钥</el-button>
-        <el-button text type="danger" @click="remove(s)">删除</el-button>
+        <ActionMenu :disabled="busy" :items="[
+          { key: 'preview', label: '预览 / 下载', disabled: !s.enabled },
+          { key: 'edit', label: '编辑订阅' },
+          { key: 'rotate', label: '轮换密钥', divided: true },
+          { key: 'remove', label: '删除订阅', danger: true }
+        ]" @select="key => key === 'preview' ? showConfig(s) : key === 'edit' ? edit(s) : key === 'rotate' ? rotate(s) : remove(s)" />
       </div>
     </article>
   </div>
 
   <div class="note">在 Clash 中新建远程订阅并粘贴地址，建议客户端每 30–60 分钟更新。订阅地址具有访问权限，请妥善保存。</div>
 
-  <el-dialog v-model="visible" :title="form.id ? '编辑订阅' : '创建订阅'" width="720px" top="6vh" class="sub-dialog">
-    <el-form label-position="top" class="sub-form">
+  <AppDrawer v-model="visible" :title="form.id ? '编辑订阅' : '创建订阅'" size="680px">
+    <el-form label-position="top" class="sub-form" @submit.prevent="save">
+      <section class="form-section"><h3>基本信息</h3>
       <div class="sub-grid">
         <el-form-item label="订阅名称"><el-input v-model="form.name" maxlength="80" /></el-form-item>
         <el-form-item label="启用订阅"><el-switch v-model="form.enabled" /></el-form-item>
       </div>
+      </section>
+      <section class="form-section"><h3>选择来源</h3>
       <el-form-item label="来源账号">
         <el-select v-model="form.account_ids" multiple collapse-tags collapse-tags-tooltip :max-collapse-tags="4" placeholder="选择一个或多个 GHelper 账号" class="full">
           <el-option v-for="a in accounts" :key="a.id" :value="a.id" :label="`${a.name}${a.enabled ? '' : '（已停用）'}`" />
@@ -216,6 +231,8 @@ const conditionText = (s: Subscription) =>
         <el-select v-model="form.chain_mode"><el-option label="原生链路（客户端执行）" value="native" /><el-option label="服务器中转" value="relay" /></el-select>
         <p class="muted">仅节点订阅中的链路始终使用服务器中转，需要启用中转端口。</p>
       </el-form-item>
+      </section>
+      <el-collapse v-model="advanced"><el-collapse-item name="filters" title="高级节点筛选">
       <el-form-item label="入口筛选（留空包含全部）">
         <el-select v-model="form.regions" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="6" class="full">
           <el-option v-for="r in regions" :key="r" :value="r" :label="regionText(r)" />
@@ -247,14 +264,16 @@ const conditionText = (s: Subscription) =>
           <el-input-number v-model="form.max_per_country" :min="1" :max="500" placeholder="不限制" class="full" />
         </el-form-item>
       </div>
+      </el-collapse-item></el-collapse>
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="busy" :disabled="(!form.account_ids.length && !form.source_ids.length && !form.chain_ids.length) || !form.name.trim()" @click="save">保存订阅</el-button>
     </template>
-  </el-dialog>
+  </AppDrawer>
 
   <el-dialog v-model="previewVisible" title="配置预览" width="850px" @closed="preview = ''">
+    <FormError />
     <pre class="config-preview">{{ preview }}</pre>
     <template #footer>
       <el-button @click="copy(preview)">复制内容</el-button>

@@ -2,6 +2,7 @@
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
+import AppDrawer from './AppDrawer.vue'
 import { api } from '../api'
 import { action, busy, jobs, load, schedulePoll } from '../store'
 import { latencyClass, time } from '../utils'
@@ -127,7 +128,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <el-dialog v-model="visible" :title="`节点详情 · ${subscription?.name || ''}`" width="1100px" top="5vh">
+  <AppDrawer v-model="visible" :title="`节点详情 · ${subscription?.name || ''}`" size="min(1120px, 95vw)" :form="false">
     <div class="detail-stats">
       <div><span>候选节点</span><strong>{{ stats.total }}</strong></div>
       <div><span>写入订阅</span><strong class="latency-good">{{ stats.included }}</strong></div>
@@ -211,5 +212,5 @@ onUnmounted(() => clearTimeout(timer))
       <span>{{ filtered.length }} 个节点 · 经 mihomo 内核按节点配置访问 204 地址计时，测不通的节点不写入订阅；没有内核时退回端口探测（标注「仅端口」）；均不代表带宽。</span>
       <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200]" :pager-count="5" :total="filtered.length" size="small" background layout="total, sizes, prev, pager, next" />
     </div>
-  </el-dialog>
+  </AppDrawer>
 </template>

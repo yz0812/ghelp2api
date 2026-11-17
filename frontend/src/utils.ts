@@ -33,9 +33,11 @@ export function latencyClass(node: SubNode) {
 /** 写入剪贴板；不支持时返回 false，由调用方回退到手动复制弹窗。 */
 export async function copyText(value: string) {
   if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(value)
-    ElMessage.success('已复制')
-    return true
+    try {
+      await navigator.clipboard.writeText(value)
+      ElMessage.success('已复制')
+      return true
+    } catch { return false }
   }
   return false
 }

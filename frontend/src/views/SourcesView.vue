@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Files, Plus, Search, SwitchButton } from '@element-plus/icons-vue'
+import { Files, Plus, Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import ActionMenu from '../components/ActionMenu.vue'
+import FilterBar from '../components/FilterBar.vue'
+import EmptyState from '../components/EmptyState.vue'
+import FormError from '../components/FormError.vue'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
-import { action, busy, checkingSources, invalidSources, jobs, load, running, schedulePoll, sources } from '../store'
+import { action, busy, checkingSources, clearError, invalidSources, jobs, load, running, schedulePoll, sources } from '../store'
 import { hostOf, time } from '../utils'
 import type { Source } from '../types'
 
@@ -22,24 +26,34 @@ const checkJobFound = ref(false)
 
 const pageSize = 9
 const page = ref(1)
-const paged = computed(() => sources.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const search = ref('')
+const status = ref('')
+const filtered = computed(() => sources.value.filter(s =>
+  (!search.value || (s.name + ' ' + s.address).toLowerCase().includes(search.value.toLowerCase())) &&
+  (!status.value || (status.value === 'invalid' ? s.invalid : status.value === 'disabled' ? !s.enabled : s.enabled && !s.invalid))))
+const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch([search, status], () => { page.value = 1 })
 
-watch([() => sources.value.length], () => {
-  page.value = Math.min(page.value, Math.max(1, Math.ceil(sources.value.length / pageSize)))
+watch([() => filtered.value.length], () => {
+  page.value = Math.min(page.value, Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 })
 
 function openAdd() {
+  clearError()
+  editing.value = null
   form.value = { name: '', url: '', text: '', enabled: true }
   visible.value = true
 }
 
 function openEdit(source: Source) {
+  clearError()
   editing.value = source
   form.value = { name: source.name, url: '', text: '', enabled: source.enabled }
   editVisible.value = true
 }
 
 function openFile() {
+  clearError()
   fileForm.value = { name: '', content: '', filename: '' }
   fileVisible.value = true
 }
@@ -52,6 +66,7 @@ function linkName(address: string) {
 }
 
 async function save() {
+  if (busy.value) return
   await action(async () => {
     if (editing.value) {
       await api(`/sources/${editing.value.id}`, 'PUT', {
@@ -91,6 +106,7 @@ async function pickFile(event: Event) {
 }
 
 async function saveFile() {
+  if (busy.value) return
   await action(async () => {
     const created = await api('/sources/file', 'POST', { name: fileForm.value.name.trim(), content: fileForm.value.content })
     fileVisible.value = false
@@ -181,18 +197,25 @@ async function deleteInvalid() {
   </PageHeading>
   <RunningBanner :running="running.length > 0" />
 
+  <FilterBar>
+    <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索名称或域名" aria-label="搜索订阅源" />
+    <el-select v-model="status" clearable placeholder="全部状态" aria-label="订阅源状态">
+      <el-option label="已启用" value="enabled" /><el-option label="已失效" value="invalid" /><el-option label="已停用" value="disabled" />
+    </el-select>
+    <template #actions><span class="muted">{{ filtered.length }} / {{ sources.length }} 个订阅源</span></template>
+  </FilterBar>
   <div class="toolbar">
     <span class="muted">共 {{ sources.length }} 个订阅源<template v-if="invalidSources.length"> · <span class="danger-text">{{ invalidSources.length }} 个失效</span></template></span>
     <div class="toolbar-actions">
       <el-button :icon="Search" :disabled="!sources.length || checkingSources" :loading="busy" @click="check">检测失效</el-button>
-      <el-button type="warning" plain :icon="SwitchButton" :disabled="!invalidSources.length || checkingSources" :loading="busy" @click="disableInvalid">一键禁用失效</el-button>
-      <el-button type="danger" plain :icon="Delete" :disabled="!invalidSources.length || checkingSources" :loading="busy" @click="deleteInvalid">一键删除失效</el-button>
+      <ActionMenu label="失效订阅源操作" :disabled="busy || checkingSources || !invalidSources.length" :items="[{ key: 'disable', label: '一键禁用失效' }, { key: 'delete', label: '一键删除失效', danger: true, divided: true }]" @select="key => key === 'disable' ? disableInvalid() : deleteInvalid()" />
     </div>
   </div>
 
-  <el-empty v-if="!sources.length" description="粘贴其他机场的订阅地址，和 GHelper 节点一起导出">
+  <EmptyState v-if="!sources.length" title="连接更多订阅源" description="粘贴订阅地址或导入文件，与已有节点一起导出。">
     <el-button type="primary" @click="openAdd">添加订阅源</el-button>
-  </el-empty>
+  </EmptyState>
+  <EmptyState v-else-if="!filtered.length" title="没有符合条件的订阅源" description="试试其他名称或清空筛选条件。"><el-button @click="search = ''; status = ''">清空筛选</el-button></EmptyState>
 
   <div v-else class="account-grid">
     <article v-for="s in paged" :key="s.id" :class="['panel', 'account-card', { 'is-invalid': s.invalid }]">
@@ -214,14 +237,14 @@ async function deleteInvalid() {
         <el-button v-if="s.kind === 'file'" :loading="busy" @click="reupload(s)">重新上传</el-button>
         <el-button v-else :loading="busy" :disabled="!s.enabled" @click="pull(s)">立即拉取</el-button>
         <el-button @click="openEdit(s)">编辑</el-button>
-        <el-button text type="danger" @click="remove(s)">删除</el-button>
+        <ActionMenu :disabled="busy" :items="[{ key: 'remove', label: '删除订阅源', danger: true }]" @select="remove(s)" />
       </div>
     </article>
   </div>
 
-  <div v-if="sources.length > pageSize" class="table-footer">
-    <span>第 {{ page }} / {{ Math.ceil(sources.length / pageSize) }} 页 · 每页 {{ pageSize }} 个</span>
-    <el-pagination v-model:current-page="page" :page-size="pageSize" :pager-count="5" :total="sources.length" size="small" background layout="total, prev, pager, next" />
+  <div v-if="filtered.length > pageSize" class="table-footer">
+    <span>第 {{ page }} / {{ Math.ceil(filtered.length / pageSize) }} 页 · 每页 {{ pageSize }} 个</span>
+    <el-pagination v-model:current-page="page" :page-size="pageSize" :pager-count="5" :total="filtered.length" size="small" background layout="total, prev, pager, next" />
   </div>
 
   <input ref="reuploadInput" type="file" accept=".yaml,.yml,.txt,.conf" hidden @change="pickReupload" />
@@ -230,6 +253,7 @@ async function deleteInvalid() {
   </div>
 
   <el-dialog v-model="visible" title="批量添加订阅源" width="620px" @closed="form.text = ''">
+    <FormError />
     <el-form label-position="top">
       <el-form-item label="订阅地址或 vless:// 节点链接（每行一个，可写「名称,地址」）">
         <el-input v-model="form.text" type="textarea" :rows="9" placeholder="机场 A,https://example.com/api/v1/client/subscribe?token=...&#10;https://example.com/clash.yaml&#10;vless://uuid@vl.example.com:443?security=reality&amp;sni=...#节点名" />
@@ -243,6 +267,7 @@ async function deleteInvalid() {
   </el-dialog>
 
   <el-dialog v-model="editVisible" title="编辑订阅源" width="620px" @closed="form.url = ''">
+    <FormError />
     <el-form label-position="top">
       <el-form-item label="名称">
         <el-input v-model="form.name" maxlength="80" />
@@ -261,6 +286,7 @@ async function deleteInvalid() {
   </el-dialog>
 
   <el-dialog v-model="fileVisible" title="导入订阅文件" width="560px" @closed="fileForm.content = ''">
+    <FormError />
     <el-form label-position="top">
       <el-form-item label="订阅文件">
         <label class="file-picker">{{ fileForm.filename || '选择文件（Clash YAML 或链接列表）' }}<input type="file" accept=".yaml,.yml,.txt,.conf" @change="pickFile" /></label>

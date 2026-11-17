@@ -3,12 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import FilterBar from '../components/FilterBar.vue'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
 import { accounts, action, busy, loading, load, nodes, regionText, regions, running, schedulePoll } from '../store'
 import { time } from '../utils'
 import type { Node } from '../types'
 
+const tableRef = ref<{ clearSelection: () => void }>()
 const search = ref('')
 const accountFilter = ref('')
 const regionFilter = ref('')
@@ -46,7 +48,7 @@ async function probe() {
   <RunningBanner :running="running.length > 0" />
 
   <section class="panel">
-    <div class="filters">
+    <FilterBar>
       <el-input v-model="search" placeholder="搜索节点或账号" :prefix-icon="Search" clearable aria-label="搜索节点" />
       <el-select v-model="accountFilter" placeholder="全部账号" clearable aria-label="筛选账号">
         <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="a.id" />
@@ -59,11 +61,12 @@ async function probe() {
         <el-option label="连接失败" value="failed" />
         <el-option label="未测速" value="untested" />
       </el-select>
-      <el-button type="primary" :loading="busy" :disabled="!filtered.length || running.some(j => j.kind === 'probe')" @click="probe">
+      <template #actions><el-button type="primary" :loading="busy" :disabled="!filtered.length || running.some(j => j.kind === 'probe')" @click="probe">
         {{ selectedNodes.length ? `测速选中 (${selectedNodes.length})` : '测速当前列表' }}
-      </el-button>
-    </div>
-    <el-table :data="paged" row-key="id" max-height="100vh - 470px" @selection-change="(v: Node[]) => selectedNodes = v" empty-text="暂无节点，请先添加账号并刷新" v-loading="loading">
+      </el-button></template>
+    </FilterBar>
+    <div v-if="selectedNodes.length" class="selection-bar"><span>已选择 {{ selectedNodes.length }} 个节点（包含其他页的选择）</span><el-button text type="primary" @click="tableRef?.clearSelection()">清空选择</el-button></div>
+    <el-table ref="tableRef" :data="paged" row-key="id" max-height="calc(100dvh - 320px)" @selection-change="(v: Node[]) => selectedNodes = v" :empty-text="nodes.length ? '没有符合条件的节点，请调整筛选' : '暂无节点，请先添加账号并刷新'" v-loading="loading">
       <el-table-column type="selection" width="42" reserve-selection />
       <el-table-column label="官方线路名称" prop="official_name" min-width="180" sortable>
         <template #default="{ row }">{{ row.official_name || '未识别出口' }}</template>

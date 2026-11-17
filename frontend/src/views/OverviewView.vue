@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Connection, Key, Link, Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '../api'
+import EmptyState from '../components/EmptyState.vue'
+import { jobKind, time } from '../utils'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
 import AccountImportDialog from '../components/AccountImportDialog.vue'
-import { accounts, action, busy, healthy, load, regions, running, schedulePoll, settings, stateLabel, subscriptions, usable } from '../store'
+import { accounts, action, busy, chains, healthy, invalidSources, jobs, load, regions, running, schedulePoll, settings, stateLabel, subscriptions, usable } from '../store'
 
 const importVisible = ref(false)
+const failedAccounts = computed(() => accounts.value.filter(a => a.enabled && ['invalid', 'error'].includes(a.status)))
+const failedChains = computed(() => chains.value.filter(c => c.enabled && c.status.state === 'error'))
+const recentJobs = computed(() => jobs.value.slice(0, 4))
 
 async function refreshAll() {
   await action(async () => {
@@ -47,13 +52,24 @@ async function refreshAll() {
       <el-icon><Link /></el-icon>
     </article>
     <article class="stat">
-      <span>自动刷新</span>
-      <div>{{ settings.refresh_minutes }} <small>分钟</small></div>
-      <p>服务端决定会话是否轮换</p>
+      <span>代理链路</span>
+      <div>{{ chains.length }} <small>条</small></div>
+      <p>{{ chains.filter(c => c.enabled).length }} 条已启用</p>
       <el-icon><Refresh /></el-icon>
     </article>
   </section>
 
+  <div class="run-summary">
+    <span><span class="status-dot" />自动刷新 · 每 {{ settings.refresh_minutes }} 分钟</span>
+    <router-link :to="{ name: 'settings' }" class="text-link">调整运行设置 →</router-link>
+  </div>
+  <div v-if="failedAccounts.length || invalidSources.length || failedChains.length" class="run-summary">
+    <span class="danger-text">需要关注</span>
+    <router-link v-if="failedAccounts.length" :to="{ name: 'accounts' }" class="text-link">{{ failedAccounts.length }} 个账号异常</router-link>
+    <router-link v-if="invalidSources.length" :to="{ name: 'sources' }" class="text-link">{{ invalidSources.length }} 个订阅源失效</router-link>
+    <router-link v-if="failedChains.length" :to="{ name: 'chains' }" class="text-link">{{ failedChains.length }} 条链路异常</router-link>
+  </div>
+  <div class="overview-grid">
   <section class="panel">
     <div class="panel-heading">
       <div>
@@ -62,9 +78,9 @@ async function refreshAll() {
       </div>
       <el-button :icon="Refresh" :loading="busy" :disabled="!accounts.length" @click="refreshAll">刷新全部</el-button>
     </div>
-    <el-empty v-if="!accounts.length" description="还没有账号，添加第一个 token 开始使用">
+    <EmptyState v-if="!accounts.length" title="从第一个账号开始" description="添加账号后，即可获取节点并创建统一订阅。">
       <el-button type="primary" @click="importVisible = true">添加账号</el-button>
-    </el-empty>
+    </EmptyState>
     <div v-else class="account-overview">
       <div v-for="a in accounts" :key="a.id" class="account-row">
         <div class="account-avatar"><el-icon><Key /></el-icon></div>
@@ -81,6 +97,16 @@ async function refreshAll() {
     </div>
   </section>
 
+  <section class="panel">
+    <div class="panel-heading"><div><h2>最近任务</h2><p class="muted">刷新、测速与链路检测</p></div><router-link :to="{ name: 'jobs' }" class="text-link">全部 →</router-link></div>
+    <EmptyState v-if="!recentJobs.length" title="暂无任务" description="执行刷新或测速后，进度会显示在这里。" />
+    <div v-for="job in recentJobs" :key="job.id" class="activity-row">
+      <div><strong>{{ jobKind[job.kind] || job.kind }}</strong><p>{{ time(job.created_at) }}</p><p>{{ job.completed }} / {{ job.total }}</p></div>
+      <el-tag :type="job.status === 'completed' ? 'success' : ['partial', 'interrupted'].includes(job.status) ? 'warning' : 'info'">{{ stateLabel[job.status] || job.status }}</el-tag>
+    </div>
+  </section>
+  </div>
+
   <div class="guide-grid">
     <article class="guide-card">
       <el-icon :size="28"><Link /></el-icon>
@@ -90,9 +116,9 @@ async function refreshAll() {
     </article>
     <article class="guide-card soft">
       <el-icon :size="28"><Connection /></el-icon>
-      <h3>入口不等于出口</h3>
-      <p>广州、佛山等代号表示国内接入入口。测速反映本服务所在网络的连接耗时，不代表带宽。</p>
-      <router-link :to="{ name: 'nodes' }" class="text-link">查看节点详情 →</router-link>
+      <h3>连接你的入口与出口</h3>
+      <p>从已有订阅选择入口，连接自建或第三方出口。生成链路订阅，或通过中转地址直接使用。</p>
+      <router-link :to="{ name: 'chains' }" class="text-link">配置代理链路 →</router-link>
     </article>
   </div>
 

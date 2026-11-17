@@ -5,10 +5,9 @@ defineProps<{ title: string, subtitle: string }>()
 <template>
   <div class="page-heading">
     <div>
-      <span class="eyebrow">GHELPER WORKSPACE</span>
       <h1>{{ title }}</h1>
       <p class="muted">{{ subtitle }}</p>
     </div>
-    <slot />
+    <div v-if="$slots.default" class="heading-actions"><slot /></div>
   </div>
 </template>

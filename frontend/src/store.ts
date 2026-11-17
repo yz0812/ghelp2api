@@ -33,6 +33,7 @@ export const checkingSources = computed(() => running.value.some(j => j.kind ===
 
 export function regionText(code: string) { return regionLabels.value[code] || code }
 
+let loaded = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let bootPromise: Promise<void> | undefined
 
@@ -54,7 +55,7 @@ export async function action(fn: () => Promise<void>) {
 }
 
 export async function load() {
-  loading.value = true
+  loading.value = !loaded
   try {
     const [a, n, src, s, j, config, ch] = await Promise.all([
       api('/accounts'), api('/nodes'), api('/sources'), api('/subscriptions'), api('/jobs'), api('/settings'), api('/chains')
@@ -66,6 +67,7 @@ export async function load() {
     chains.value = ch
     jobs.value = j
     Object.assign(settings, config)
+    loaded = true
   } finally {
     loading.value = false
   }
@@ -82,6 +84,7 @@ export function schedulePoll() {
 }
 
 export function expire() {
+  loaded = false
   clearTimeout(pollTimer)
   setCsrf('')
   loggedIn.value = false

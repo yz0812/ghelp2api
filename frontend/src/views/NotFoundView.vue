@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import ThemeSwitcher from '../components/ThemeSwitcher.vue'
 import { Connection } from '@element-plus/icons-vue'
 </script>
 
 <template>
   <main class="login-page not-found">
+    <div class="login-theme"><ThemeSwitcher /></div>
     <section class="login-box">
       <span class="eyebrow">404</span>
       <h2>页面不存在</h2>
