@@ -87,7 +87,8 @@ class Service:
     def preferences(self):
         with self.db() as db:
             row = db.get(Preference, "general")
-            return {"refresh_minutes": 30, "probe_minutes": 30, "probe_timeout_ms": DELAY_TIMEOUT} | (row.value if row else {})
+            return {"refresh_minutes": 30, "probe_minutes": 30, "probe_timeout_ms": DELAY_TIMEOUT,
+                    "proxy_public_host": "proxy.accsunny.com"} | (row.value if row else {})
 
     def refresh_interval(self, account, now, base):
         """会话接近寿命时缩短探测间隔，把发现新节点池的延迟压到 FAST_INTERVAL 内。"""

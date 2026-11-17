@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { time } from '../utils'
 import type { ProbeResult } from '../types'
-defineProps<{ loading?: boolean, result?: ProbeResult | null }>()
+withDefaults(defineProps<{ loading?: boolean, result?: ProbeResult | null, entryLabel?: string }>(), {
+  entryLabel: '检测时最快入口'
+})
 </script>
 
 <template>
@@ -9,7 +11,7 @@ defineProps<{ loading?: boolean, result?: ProbeResult | null }>()
     <span v-if="loading" class="muted">正在检测，请稍候…</span>
     <template v-else-if="result">
       <strong :class="result.reachable ? 'latency-good' : 'danger-text'">{{ result.reachable ? `最近检测可用 · ${result.latency} ms` : '最近检测失败' }}</strong>
-      <div v-if="result.entry">检测时最快入口：{{ result.entry }}</div>
+      <div v-if="result.entry">{{ entryLabel }}：{{ result.entry }}</div>
       <div v-if="result.error" class="danger-text">{{ result.error }}</div>
       <small class="muted">检测时间：{{ time(result.tested_at) }}</small>
     </template>

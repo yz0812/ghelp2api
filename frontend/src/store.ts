@@ -20,6 +20,7 @@ export const subscriptions = ref<Subscription[]>([])
 export const chains = ref<Chain[]>([])
 export const jobs = ref<Job[]>([])
 export const settings = reactive<Preferences>({
+  proxy_public_host: 'proxy.accsunny.com',
   proxy_port_start: 20000, proxy_port_end: 20099,
   refresh_minutes: 30, probe_minutes: 30, probe_timeout_ms: 5000,
   mihomo: false, public_base_url: '', extension_version: '', version: ''

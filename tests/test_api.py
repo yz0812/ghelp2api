@@ -1,5 +1,6 @@
 import time
 
+import pytest
 import yaml
 from sqlalchemy import select
 
@@ -187,6 +188,23 @@ def test_replace_token_clears_old_snapshot(client, account_id):
     assert client.patch(f"/api/v1/accounts/{account_id}", json={"token": "c" * 32}).status_code == 200
     assert client.get("/api/v1/nodes").json() == []
     assert client.get("/api/v1/accounts").json()[0]["last_success"] is None
+
+
+@pytest.mark.parametrize('host', ['https://proxy.example.com', 'proxy.example.com:20000',
+                                  'proxy.example.com/path', 'user@proxy.example.com', '[invalid]', None])
+def test_invalid_proxy_public_host(client, host):
+    response = client.put('/api/v1/settings', json={'refresh_minutes': 10, 'proxy_public_host': host})
+    assert response.status_code == 422
+    assert client.get('/api/v1/settings').json()['proxy_public_host'] == 'proxy.accsunny.com'
+
+
+@pytest.mark.parametrize(('host', 'expected'), [('192.0.2.1', '192.0.2.1'),
+                                              ('[2001:db8::1]', '2001:db8::1'),
+                                              ('2001:db8::1', '2001:db8::1')])
+def test_proxy_public_ip(client, host, expected):
+    response = client.put('/api/v1/settings', json={'refresh_minutes': 10, 'proxy_public_host': host})
+    assert response.status_code == 200
+    assert response.json()['proxy_public_host'] == expected
 
 
 def test_settings_and_health(client):

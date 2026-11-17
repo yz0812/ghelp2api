@@ -1,7 +1,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.subscription import MAX_CHARS
+from app.subscription import MAX_CHARS, _valid_server
 
 
 class AccountInput(BaseModel):
@@ -111,3 +111,19 @@ class PreferencesInput(BaseModel):
     probe_minutes: int = Field(default=30, ge=5, le=60)
     # 内核测速时单个节点的超时；超过即判为不可用
     probe_timeout_ms: int = Field(default=5000, ge=1000, le=10000)
+    proxy_public_host: str = Field(default="proxy.accsunny.com", max_length=253)
+
+    @field_validator("proxy_public_host")
+    @classmethod
+    def valid_proxy_public_host(cls, value: str) -> str:
+        from ipaddress import ip_address
+
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            return str(ip_address(value.removeprefix("[").removesuffix("]")))
+        except ValueError:
+            if not _valid_server(value) or ":" in value or "[" in value or "]" in value:
+                raise ValueError("代理对外地址只能填写域名或 IP，不要包含协议、端口或路径") from None
+        return value

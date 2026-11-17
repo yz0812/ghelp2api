@@ -30,16 +30,22 @@ export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;
 }
 export interface Preferences {
+  proxy_public_host: string;
   proxy_port_start: number; proxy_port_end: number;
   refresh_minutes: number; probe_minutes: number; probe_timeout_ms: number;
   mihomo: boolean; public_base_url: string; extension_version: string; version: string;
 }
 
-export interface Chain { id: string; name: string; entry_id: string; exit_id: string; enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; probe?: ProbeResult | null; status: { state: string; error?: string; current_entry?: string; latency?: number } }
+export interface Chain {
+  id: string; name: string; entry_id: string; exit_id: string;
+  entry_mode: 'auto' | 'fixed'; entry_node_key: string | null; selected_entry?: string | null;
+  enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; probe?: ProbeResult | null;
+  status: { state: string; error?: string; current_entry?: string | null; current_entry_key?: string | null; latency?: number | null };
+}
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export interface ProbeResult {
-  reachable: boolean; latency: number | null; entry?: string | null; error: string | null; tested_at: number;
+  reachable: boolean; latency: number | null; entry?: string | null; entry_key?: string | null; error: string | null; tested_at: number;
 }
 export interface Entry {
   id: string; name: string; subscription_id: string; mode: 'auto' | 'fixed'; node_key: string | null; node_keys: string[]; enabled: boolean;

@@ -650,9 +650,10 @@ def create_app(settings: Settings | None = None):
 
     @app.put("/api/v1/settings", dependencies=secured)
     async def save_settings(payload: PreferencesInput):
+        values = service.preferences() | payload.model_dump(exclude_unset=True)
         with db_factory.begin() as db:
-            db.merge(Preference(key="general", value=payload.model_dump()))
-        return payload
+            db.merge(Preference(key="general", value=values))
+        return values
 
     @app.get("/api/v1/openapi.json", dependencies=secured, include_in_schema=False)
     async def schema():

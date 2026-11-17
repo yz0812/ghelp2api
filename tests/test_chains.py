@@ -26,6 +26,47 @@ def setup_chain(client, fixed=False):
     return sub, entry.json(), exit.json(), chain.json()
 
 
+def test_system_proxy_host_connection_export_and_precedence(client, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.models import Preference
+
+    service = client.app.state.service
+    service.settings.public_base_url = 'https://web.example.com'
+    _, _, _, chain = setup_chain(client)
+    endpoint = f"/api/v1/chains/{chain['id']}/connection"
+    assert client.get(endpoint).json()['host'] == 'proxy.accsunny.com'
+    response = client.put('/api/v1/settings', json={
+        'refresh_minutes': 10, 'proxy_public_host': ' proxy.example.com ',
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()['proxy_public_host'] == 'proxy.example.com'
+    with service.db() as db:
+        assert db.get(Preference, 'general').value['proxy_public_host'] == 'proxy.example.com'
+    assert client.get(endpoint).json()['host'] == 'proxy.example.com'
+
+    # Older clients updating other settings must not erase the proxy hostname.
+    assert client.put('/api/v1/settings', json={'refresh_minutes': 15}).status_code == 200
+    assert client.get('/api/v1/settings').json()['proxy_public_host'] == 'proxy.example.com'
+    monkeypatch.setattr(service.chains, 'sync', AsyncMock())
+    service.chains.status[chain['id']] = {'state': 'running'}
+    sub = client.post('/api/v1/subscriptions', json={
+        'name': '中转订阅', 'chain_ids': [chain['id']], 'chain_mode': 'relay',
+    }).json()
+    response = client.get(sub['proxies_url'])
+    assert response.status_code == 200, response.text
+    assert yaml.safe_load(response.text)['proxies'][0]['server'] == 'proxy.example.com'
+
+    with service.db.begin() as db:
+        db.get(Chain, chain['id']).public_host = 'override.example.com'
+    assert client.get(endpoint).json()['host'] == 'override.example.com'
+    with service.db.begin() as db:
+        db.get(Chain, chain['id']).public_host = ''
+    assert client.put('/api/v1/settings', json={
+        'refresh_minutes': 15, 'proxy_public_host': '',
+    }).status_code == 200
+    assert client.get(endpoint).json()['host'] == 'web.example.com'
+
+
 def test_native_graph_and_provider_fail_closed(client, tmp_path):
     _, _, _, chain = setup_chain(client)
     sub = client.post('/api/v1/subscriptions', json={"name": "仅链路", "chain_ids": [chain['id']]}).json()
@@ -235,7 +276,8 @@ def test_invalid_exit_content(client, content):
 
 
 @pytest.mark.parametrize('fixed_pool', [False, True])
-def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool):
+@pytest.mark.parametrize('pinned', [False, True])
+def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool, pinned):
     import http.server
     import select
     import socket
@@ -250,6 +292,7 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
     if not binary.exists():
         pytest.skip('本地未安装真实内核')
     hits = {'entry': 0, 'slow': 0, 'exit': 0}
+    delay_by_label = {'entry': 0, 'slow': .2, 'exit': 0}
 
     class Target(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -263,8 +306,8 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
         class Proxy(Target):
             def do_CONNECT(self):
                 hits[label] += 1
-                if label == 'slow':
-                    time.sleep(.2)
+                if delay_by_label[label]:
+                    time.sleep(delay_by_label[label])
                 host, port = self.path.rsplit(':', 1)
                 with socket.create_connection((host, int(port)), timeout=5) as remote:
                     self.send_response(200)
@@ -306,6 +349,11 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
                 selected.node_key = selected.node_keys[0]
             db.get(Exit, exit['id']).config_cipher = service.secrets.encrypt(json.dumps({"name": "local-exit", "type": "http", "server": "127.0.0.1", "port": exit_port}))
             db.get(Chain, chain['id']).listen_port = free_port()
+            if pinned:
+                from app.service import proxy_key
+                configured = db.get(Chain, chain['id'])
+                configured.entry_mode = 'fixed'
+                configured.entry_node_key = proxy_key(source.proxies[1])
         monkeypatch.setenv('MIHOMO_BIN', str(binary))
         client.portal.call(service.chains.sync)
         assert service.chains.status[chain['id']]['state'] == 'running'
@@ -314,18 +362,26 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
         from urllib.parse import quote
         client.portal.call(partial(service.chains._request, f"/group/{quote(group, safe='')}/delay",
                                    params={"url": target, "timeout": 1000}, timeout=5))
+        status = client.portal.call(service.chains.inspect)[chain['id']]
+        assert status['current_entry'].endswith('slow' if pinned else 'local'), status
         if fixed_pool:
-            status = client.portal.call(service.chains.inspect)[chain['id']]
-            assert status['current_entry'].endswith('local'), status
             assert hits['slow'] > 0  # Both working candidates were measured.
         conn = client.get(f"/api/v1/chains/{chain['id']}/connection").json()
         proxy = f"http://{conn['username']}:{conn['password']}@127.0.0.1:{conn['port']}"
         with httpx.Client(proxy=proxy, trust_env=False, timeout=5) as transport:
             assert transport.get(target).status_code == 204
-        assert hits['entry'] > 0 and hits['exit'] > 0
+        assert hits['slow' if pinned else 'entry'] > 0 and hits['exit'] > 0
+        if pinned:
+            assert hits['entry'] == 0  # The faster candidate must never be used or tested.
         live = client.post(f"/api/v1/chains/{chain['id']}/probe")
         assert live.status_code == 200 and live.json()['reachable'] is True
-        assert live.json()['latency'] > 0 and live.json()['entry'].endswith('local')
+        assert live.json()['latency'] > 0 and live.json()['entry'].endswith('slow' if pinned else 'local')
+        if pinned:
+            # Native-only probes also measure the single-member select group correctly.
+            with service.db() as db:
+                nodes, selected_group = service.chains.build(db.get(Chain, chain['id']))
+            measured = client.portal.call(service.chains._measure, nodes, selected_group)
+            assert set(measured) == set(selected_group['proxies'])
         direct = client.post(f"/api/v1/exits/{exit['id']}/probe")
         assert direct.status_code == 200 and direct.json()['reachable'] is True
         assert direct.json()['latency'] > 0
@@ -345,6 +401,14 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
         client.portal.call(service.chains._stop_process)
         client.portal.call(service.chains.sync)
         assert service.chains.status[chain['id']]['state'] == 'running'
+        if not pinned:
+            # Change the winner and prove manual probing updates the *running* group.
+            delay_by_label.update(entry=.35, slow=.01)
+            changed = client.post(f"/api/v1/chains/{chain['id']}/probe").json()
+            assert changed['reachable'] and changed['entry'].endswith('slow')
+            current = client.get('/api/v1/chains').json()[0]['status']
+            assert current['current_entry'].endswith('slow')
+            assert current['current_entry_key'] == changed['entry_key']
         disabled = client.put(f"/api/v1/chains/{chain['id']}", json={"name": "停用", "entry_id": entry['id'], "exit_id": exit['id'], "enabled": False})
         assert disabled.status_code == 200, disabled.text
         with pytest.raises(OSError):

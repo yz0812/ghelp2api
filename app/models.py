@@ -144,6 +144,8 @@ class Chain(Base):
     name: Mapped[str] = mapped_column(String(80))
     entry_id: Mapped[str] = mapped_column(ForeignKey("entries.id"))
     exit_id: Mapped[str] = mapped_column(ForeignKey("exits.id"))
+    entry_mode: Mapped[str] = mapped_column(String(10), default="auto")
+    entry_node_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     relay_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     listen_port: Mapped[int] = mapped_column(Integer, unique=True)

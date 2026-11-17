@@ -56,10 +56,20 @@ class ChainInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     entry_id: str
     exit_id: str
+    entry_mode: Literal["auto", "fixed"] = "auto"
+    entry_node_key: str | None = Field(default=None, min_length=1, max_length=64)
     enabled: bool = True
     relay_enabled: bool = True
     listen_port: int | None = Field(default=None, ge=1024, le=65535)
     public_host: str = ""
+
+    @model_validator(mode="after")
+    def selected_entry(self):
+        if self.entry_mode == "fixed" and not self.entry_node_key:
+            raise ValueError("指定入口模式需要选择一个入口节点")
+        if self.entry_mode == "auto":
+            self.entry_node_key = None
+        return self
 
 
 def install(app, service, secured):
@@ -75,8 +85,13 @@ def install(app, service, secured):
             password = config.pop("password", None)
             return dict(config, id=row.id, name=row.name, enabled=row.enabled, has_password=bool(password),
                         probe=manager.cached_result(row))
-        return {k: getattr(row, k) for k in ("id", "name", "entry_id", "exit_id", "enabled", "relay_enabled",
+        with service.db() as db:
+            entry = db.get(Entry, row.entry_id)
+        selected_entry = next((r["proxy"]["name"] for key, r in manager.candidates(entry, check_enabled=False)
+                               if key == row.entry_node_key), None) if entry and row.entry_node_key else None
+        return {k: getattr(row, k) for k in ("id", "name", "entry_id", "exit_id", "entry_mode", "entry_node_key", "enabled", "relay_enabled",
                                             "listen_port", "public_host")} | {"status": manager.status.get(row.id, {"state": "pending"}),
+                                                                           "selected_entry": selected_entry,
                                                                            "probe": manager.cached_result(row)}
 
     def get(db, model, id):
@@ -90,7 +105,9 @@ def install(app, service, secured):
         with service.db() as db:
             entry = get(db, Entry, id)
         data = service.subscription_nodes(entry.subscription_id) or []
-        return [n for n in data if n["included"] and n["type"] != "chain"]
+        selected = set(entry.node_keys or ([entry.node_key] if entry.node_key else []))
+        return [n for n in data if n["included"] and n["type"] != "chain"
+                and (entry.mode == "auto" or n["key"] in selected)]
 
     @router.get("/chains/{id}/connection")
     async def connection(id: str):
@@ -166,8 +183,12 @@ def install(app, service, secured):
                 row.name, row.enabled = payload.name, payload.enabled
                 row.config_cipher = service.secrets.encrypt(json.dumps(config))
             else:
-                get(db, Entry, payload.entry_id)
+                entry = get(db, Entry, payload.entry_id)
                 get(db, Exit, payload.exit_id)
+                if payload.entry_mode == "fixed":
+                    available = {key for key, _ in manager.candidates(entry, check_enabled=False)}
+                    if payload.entry_node_key not in available:
+                        raise HTTPException(422, "指定入口节点不在当前候选中或已失效，请重新选择")
                 if payload.public_host and not _valid_server(payload.public_host):
                     raise HTTPException(422, "对外域名格式无效，请只填写域名或 IP")
                 occupied = set(db.scalars(select(Chain.listen_port).where(Chain.id != id)))

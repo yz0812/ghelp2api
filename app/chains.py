@@ -34,9 +34,11 @@ class ChainManager:
         self.secret = secrets.token_urlsafe(32)
         self.config_file = None
         self.entry_labels = {}
+        self.entry_keys = {}
 
     def host(self, chain):
-        return chain.public_host or urlsplit(self.service.settings.public_base_url).hostname or "localhost"
+        return (chain.public_host or self.service.preferences()["proxy_public_host"]
+                or urlsplit(self.service.settings.public_base_url).hostname or "localhost")
 
     def candidates(self, entry, *, check_enabled=True):
         with self.service.db() as db:
@@ -63,6 +65,10 @@ class ChainManager:
         if not chain.enabled or not entry or not exit or not entry.enabled or not exit.enabled:
             raise ChainError("链路、入口或出口已停用")
         candidates = self.candidates(entry)
+        if chain.entry_mode == "fixed":
+            candidates = [(key, row) for key, row in candidates if key == chain.entry_node_key]
+            if not candidates:
+                raise ChainError("指定入口节点已失效或不在入口候选中，请重新选择")
         if not candidates:
             raise ChainError("所选入口节点均已失效" if entry.mode == "fixed" else "入口订阅没有符合条件的普通节点")
         outbound = json.loads(self.service.secrets.decrypt(exit.config_cipher))
@@ -73,10 +79,12 @@ class ChainManager:
             last = dict(outbound, name=f"{tag}-out", **{"dialer-proxy": first["name"], "udp": False})
             proxies.extend([first, last])
             self.entry_labels[last["name"]] = row["proxy"]["name"]
+            self.entry_keys[last["name"]] = key
             terminals.append(last["name"])
-        group = {"name": f"链路 · {chain.name} · {chain.id[:8]}", "type": "url-test",
-                 "proxies": terminals, "url": TEST_URL, "interval": 300,
-                 "tolerance": 0 if entry.mode == "fixed" else 100, "lazy": False}
+        group = {"name": f"链路 · {chain.name} · {chain.id[:8]}",
+                 "type": "select" if chain.entry_mode == "fixed" else "url-test", "proxies": terminals}
+        if chain.entry_mode != "fixed":
+            group.update(url=TEST_URL, interval=300, tolerance=0, lazy=False)
         return proxies, group
 
     async def refresh(self, ids, force=False):
@@ -218,17 +226,30 @@ class ChainManager:
                     self.status[listener["name"]] = {"state": "error", "error": "代理启动失败，请检查内核与端口占用"}
 
     async def inspect(self):
+        # Never present an old selection as current when the core cannot be queried.
+        for status in self.status.values():
+            status.pop("current_entry", None)
+            status.pop("current_entry_key", None)
+            status.pop("latency", None)
         if self.process and self.process.returncode is None:
             try:
                 data = (await self._request("/proxies", timeout=2)).get("proxies", {})
                 for status in self.status.values():
+                    if status.get("state") != "running":
+                        continue
                     group = data.get(status.get("group"), {})
                     current = group.get("now")
                     history = data.get(current, {}).get("history", [])
-                    status.update(current_entry=self.entry_labels.get(current, current),
-                                  latency=history[-1].get("delay") if history else None)
-            except httpx.HTTPError:
+                    delay = history[-1].get("delay") if history else None
+                    status.update(current_entry=self.entry_labels.get(current),
+                                  current_entry_key=self.entry_keys.get(current),
+                                  latency=delay if delay and delay > 0 else None)
+            except (httpx.HTTPError, OSError):
                 pass
+        else:
+            for status in self.status.values():
+                if status.get("state") == "running":
+                    status.update(state="error", error="中转内核未运行，等待重启")
         return self.status
 
     async def _measure(self, proxies, group):
@@ -296,6 +317,8 @@ class ChainManager:
                   [entry.enabled, entry.mode, selected, entry.subscription_id] if entry else None,
                   [sub.enabled, sub.exclude_failed, sub.max_latency, sub.max_per_country, sub.dedupe] if sub else None,
                   keys]
+        if resource.entry_mode == "fixed":
+            config.extend([resource.entry_mode, resource.entry_node_key])
         return digest("chain-result:" + json.dumps(config, sort_keys=True))
 
     def cached_result(self, resource):
@@ -339,11 +362,24 @@ class ChainManager:
                     raise ChainError("链路不存在")
                 cache_key = self.result_key(chain)
                 proxies, group = self.build(chain)
-                delays = await self._measure(proxies, group)
+                await self.sync()
+                async with self.lock:
+                    if (self.process and self.process.returncode is None
+                            and self.status.get(chain_id, {}).get("state") == "running"):
+                        # Test the live group so automatic selection actually takes effect.
+                        delays = await self._request(f"/group/{quote(group['name'], safe='')}/delay",
+                                                     params={"url": TEST_URL, "timeout": 5000}, timeout=30)
+                    else:
+                        delays = await self._measure(proxies, group)
+                delays = {name: delay for name, delay in delays.items()
+                          if name in group["proxies"] and isinstance(delay, (int, float))
+                          and not isinstance(delay, bool) and delay > 0}
+                await self.inspect()
                 if not delays:
                     raise ChainError("所有候选链路均连接失败或超时，请检查入口和出口")
                 fastest = min(delays, key=delays.get)
-                result.update(reachable=True, latency=delays[fastest], entry=self.entry_labels.get(fastest))
+                result.update(reachable=True, latency=delays[fastest], entry=self.entry_labels.get(fastest),
+                              entry_key=self.entry_keys.get(fastest))
         except ChainError as exc:
             result["error"] = str(exc)
         except TimeoutError:

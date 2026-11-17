@@ -9,24 +9,26 @@ import { action, busy, settings } from '../store'
 
 const { preference, setTheme } = useTheme()
 const themes = [{ value: 'light' as const, label: '浅色主题', icon: Sunny }, { value: 'dark' as const, label: '深色主题', icon: Moon }, { value: 'system' as const, label: '跟随系统', icon: Monitor }]
-const form = reactive({ refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms })
+const form = reactive({ refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms, proxy_public_host: settings.proxy_public_host })
 const baseline = ref(JSON.stringify(form))
 const dirty = computed(() => JSON.stringify(form) !== baseline.value)
-watch(() => [settings.refresh_minutes, settings.probe_minutes, settings.probe_timeout_ms], () => {
+watch(() => [settings.refresh_minutes, settings.probe_minutes, settings.probe_timeout_ms, settings.proxy_public_host], () => {
   if (dirty.value) return
-  Object.assign(form, { refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms })
+  Object.assign(form, { refresh_minutes: settings.refresh_minutes, probe_minutes: settings.probe_minutes, probe_timeout_ms: settings.probe_timeout_ms, proxy_public_host: settings.proxy_public_host })
   baseline.value = JSON.stringify(form)
 })
 
 async function save() {
   if (busy.value) return
   await action(async () => {
-    await api('/settings', 'PUT', {
+    const saved = await api('/settings', 'PUT', {
       refresh_minutes: form.refresh_minutes,
       probe_minutes: form.probe_minutes,
-      probe_timeout_ms: form.probe_timeout_ms
+      probe_timeout_ms: form.probe_timeout_ms,
+      proxy_public_host: form.proxy_public_host.trim()
     })
-    Object.assign(settings, form)
+    Object.assign(form, saved)
+    Object.assign(settings, saved)
     baseline.value = JSON.stringify(form)
     ElMessage.success('设置已保存')
   })
@@ -34,7 +36,7 @@ async function save() {
 </script>
 
 <template>
-  <PageHeading title="系统设置" subtitle="调整获取频率，查看当前部署信息。" />
+  <PageHeading title="系统设置" subtitle="配置代理地址、调整获取频率，查看当前部署信息。" />
 
   <section class="panel settings-panel">
     <div class="settings-block">
@@ -69,6 +71,15 @@ async function save() {
           <span class="dot" />
           {{ settings.mihomo ? '已启用 mihomo 内核测速：每个节点按自身配置真实访问 204 检测地址。' : '未找到 mihomo 内核，当前退回端口探测，结果仅代表端口可达。' }}
         </div>
+      </div>
+      <div class="settings-block">
+        <h2>代理连接</h2>
+        <p class="muted">为未单独指定对外地址的链路设置统一的代理域名。</p>
+        <el-form-item label="代理对外域名或 IP">
+          <el-input v-model="form.proxy_public_host" placeholder="proxy.accsunny.com" :maxlength="253" autocapitalize="none" :spellcheck="false" clearable />
+          <small class="field-hint">只填写域名或 IP，不含协议、端口或路径。留空使用部署信息中的网站域名。</small>
+        </el-form-item>
+        <p class="muted">使用 Cloudflare 时，请将代理域名设为“仅 DNS（灰云）”，并确保代理端口已映射、放行。保存后新获取的连接信息和中转订阅立即生效。</p>
         <div class="settings-actions">
           <el-button type="primary" native-type="submit" :loading="busy">保存设置</el-button>
           <span v-if="dirty" class="muted"> 有尚未保存的更改</span>
