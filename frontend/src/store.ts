@@ -1,6 +1,7 @@
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, setCsrf } from './api'
+import { regionName, regionCountry } from './regions'
 import type { Account, Chain, Job, Node, Preferences, Source, Subscription } from './types'
 
 export { jobKind, stateLabel } from './utils'
@@ -19,6 +20,7 @@ export const subscriptions = ref<Subscription[]>([])
 export const chains = ref<Chain[]>([])
 export const jobs = ref<Job[]>([])
 export const settings = reactive<Preferences>({
+  proxy_port_start: 20000, proxy_port_end: 20099,
   refresh_minutes: 30, probe_minutes: 30, probe_timeout_ms: 5000,
   mihomo: false, public_base_url: '', extension_version: '', version: ''
 })
@@ -27,7 +29,8 @@ export const running = computed(() => jobs.value.filter(j => ['pending', 'runnin
 export const healthy = computed(() => accounts.value.filter(a => a.enabled && a.status === 'ready').length)
 export const usable = computed(() => nodes.value.filter(n => n.enabled && !n.stale))
 export const regions = computed(() => [...new Set(nodes.value.map(n => n.region))].sort())
-export const regionLabels = computed(() => Object.fromEntries(nodes.value.map(n => [n.region, n.region_label])))
+export const regionLabels = computed(() => Object.fromEntries(nodes.value.map(n => [n.region, regionName(n.region_name || n.region_label)])))
+export const regionCountries = computed(() => Object.fromEntries(nodes.value.map(n => [n.region, regionCountry(n.region_country, n.region_label)])))
 export const invalidSources = computed(() => sources.value.filter(s => s.invalid))
 export const checkingSources = computed(() => running.value.some(j => j.kind === 'source'))
 

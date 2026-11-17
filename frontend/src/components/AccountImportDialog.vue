@@ -48,7 +48,7 @@ async function submit() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="添加账号" width="580px" @open="clearError" @closed="text = ''">
+  <el-dialog append-to-body align-center v-model="visible" title="添加账号" width="580px" @open="clearError" @closed="text = ''">
     <FormError />
     <p class="muted">每行一个 token，也可填写「名称,token」或粘贴导出 JSON。</p>
     <el-input v-model="text" type="textarea" :rows="8" placeholder="账号 A,32 位 token&#10;账号 B,32 位 token" aria-label="批量 token" autocomplete="off" />

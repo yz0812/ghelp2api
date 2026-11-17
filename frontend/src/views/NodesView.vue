@@ -3,10 +3,11 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import RegionBadge from '../components/RegionBadge.vue'
 import FilterBar from '../components/FilterBar.vue'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
-import { accounts, action, busy, loading, load, nodes, regionText, regions, running, schedulePoll } from '../store'
+import { accounts, action, busy, loading, load, nodes, regionText, regionCountries, regions, running, schedulePoll } from '../store'
 import { time } from '../utils'
 import type { Node } from '../types'
 
@@ -54,7 +55,8 @@ async function probe() {
         <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="a.id" />
       </el-select>
       <el-select v-model="regionFilter" placeholder="全部入口" clearable aria-label="筛选入口">
-        <el-option v-for="r in regions" :key="r" :label="regionText(r)" :value="r" />
+        <template #label><RegionBadge :country="regionCountries[regionFilter]" :label="regionText(regionFilter)" /></template>
+        <el-option v-for="r in regions" :key="r" :label="regionText(r)" :value="r"><RegionBadge :country="regionCountries[r]" :label="regionText(r)" /></el-option>
       </el-select>
       <el-select v-model="statusFilter" placeholder="全部状态" clearable aria-label="筛选状态">
         <el-option label="已测通" value="ok" />
@@ -72,7 +74,7 @@ async function probe() {
         <template #default="{ row }">{{ row.official_name || '未识别出口' }}</template>
       </el-table-column>
       <el-table-column label="入口" prop="region" width="140" sortable>
-        <template #default="{ row }">{{ regionText(row.region) }}</template>
+        <template #default="{ row }"><RegionBadge :country="row.region_country" :label="row.region_name || row.region_label" /></template>
       </el-table-column>
       <el-table-column label="节点地址" min-width="260">
         <template #default="{ row }">

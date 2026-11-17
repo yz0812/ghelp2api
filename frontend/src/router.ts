@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { boot, loggedIn } from './store'
 
 const routes = [
-  { path: '/chains', name: 'chains', component: () => import('./views/ChainsView.vue'), meta: { label: '入口与出口' } },
+  { path: '/chains', name: 'chains', component: () => import('./views/ChainsView.vue'), meta: { label: '链式' } },
   { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue'), meta: { label: '连接总览' } },
   { path: '/accounts', name: 'accounts', component: () => import('./views/AccountsView.vue'), meta: { label: '账号管理' } },
   { path: '/nodes', name: 'nodes', component: () => import('./views/NodesView.vue'), meta: { label: '节点列表' } },

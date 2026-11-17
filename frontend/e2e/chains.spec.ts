@@ -25,7 +25,7 @@ test('入口出口配置、原生订阅、连接信息与移动端', async ({ pa
   await page.getByLabel('管理员账号').fill('admin')
   await page.getByLabel('密码', { exact: true }).fill('test-password-12345')
   await page.getByRole('button', { name: '登录', exact: true }).click()
-  await page.getByRole('link', { name: '入口与出口', exact: true }).click()
+  await page.getByRole('link', { name: '链式', exact: true }).click()
   await page.getByRole('tab', { name: '入口', exact: true }).click()
   await page.getByRole('button', { name: '添加入口' }).first().click()
   await page.getByLabel('配置名称').fill('测试入口')

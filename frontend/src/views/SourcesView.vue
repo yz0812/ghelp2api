@@ -252,7 +252,7 @@ async function deleteInvalid() {
     文件导入的订阅源不会自动更新，节点变化后点「重新上传」。检测会重新拉取每个已启用的订阅源（并发 5），最近一次拉取失败的（地址过期、内容为空、没有可解析的节点）记为失效。停用后不再参与订阅生成，重新启用即可恢复。地址只保存在本地并加密存储，列表仅显示域名。
   </div>
 
-  <el-dialog v-model="visible" title="批量添加订阅源" width="620px" @closed="form.text = ''">
+  <el-dialog append-to-body align-center v-model="visible" title="批量添加订阅源" width="620px" @closed="form.text = ''">
     <FormError />
     <el-form label-position="top">
       <el-form-item label="订阅地址或 vless:// 节点链接（每行一个，可写「名称,地址」）">
@@ -266,7 +266,7 @@ async function deleteInvalid() {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="editVisible" title="编辑订阅源" width="620px" @closed="form.url = ''">
+  <el-dialog append-to-body align-center v-model="editVisible" title="编辑订阅源" width="620px" @closed="form.url = ''">
     <FormError />
     <el-form label-position="top">
       <el-form-item label="名称">
@@ -285,7 +285,7 @@ async function deleteInvalid() {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="fileVisible" title="导入订阅文件" width="560px" @closed="fileForm.content = ''">
+  <el-dialog append-to-body align-center v-model="fileVisible" title="导入订阅文件" width="560px" @closed="fileForm.content = ''">
     <FormError />
     <el-form label-position="top">
       <el-form-item label="订阅文件">

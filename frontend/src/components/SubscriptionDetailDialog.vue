@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import RegionBadge from './RegionBadge.vue'
+import { regionName } from '../regions'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
-import AppDrawer from './AppDrawer.vue'
+import AppDialog from './AppDialog.vue'
 import { api } from '../api'
 import { action, busy, jobs, load, schedulePoll } from '../store'
 import { latencyClass, time } from '../utils'
@@ -25,7 +27,7 @@ const pageSize = ref(50)
 const sort = reactive({ prop: 'latency', order: 'ascending' as 'ascending' | 'descending' | null })
 let timer: ReturnType<typeof setTimeout> | undefined
 
-const countries = computed(() => [...new Map(nodeList.value.map(n => [n.country, n.country_label])).entries()].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN')))
+const countries = computed(() => [...new Map(nodeList.value.map(n => [n.country, regionName(n.country_label)])).entries()].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN')))
 const origins = computed(() => [...new Set(nodeList.value.map(n => n.origin))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
 
 function sortValue(n: SubNode, prop: string): number | string | null {
@@ -128,7 +130,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <AppDrawer v-model="visible" :title="`节点详情 · ${subscription?.name || ''}`" size="min(1120px, 95vw)" :form="false">
+  <AppDialog v-model="visible" :title="`节点详情 · ${subscription?.name || ''}`" size="min(1120px, 95vw)" :form="false">
     <div class="detail-stats">
       <div><span>候选节点</span><strong>{{ stats.total }}</strong></div>
       <div><span>写入订阅</span><strong class="latency-good">{{ stats.included }}</strong></div>
@@ -149,7 +151,8 @@ onUnmounted(() => clearTimeout(timer))
     <div class="filters">
       <el-input v-model="search" placeholder="搜索名称、地址或来源" :prefix-icon="Search" clearable aria-label="搜索订阅节点" />
       <el-select v-model="country" placeholder="全部国家" clearable filterable aria-label="筛选国家">
-        <el-option v-for="[code, text] in countries" :key="code" :label="text" :value="code" />
+        <template #label><RegionBadge :country="country" :label="countries.find(([code]) => code === country)?.[1]" /></template>
+        <el-option v-for="[code, text] in countries" :key="code" :label="text" :value="code"><RegionBadge :country="code" :label="text" /></el-option>
       </el-select>
       <el-select v-model="origin" placeholder="全部来源" clearable filterable aria-label="筛选来源">
         <el-option v-for="o in origins" :key="o" :label="o" :value="o" />
@@ -178,7 +181,7 @@ onUnmounted(() => clearTimeout(timer))
       <el-table-column type="selection" width="42" reserve-selection />
       <el-table-column label="节点名称" prop="name" min-width="200" sortable="custom" show-overflow-tooltip />
       <el-table-column label="来源" prop="origin" min-width="150" sortable="custom" show-overflow-tooltip />
-      <el-table-column label="国家" prop="country_label" width="115" sortable="custom" />
+      <el-table-column label="国家" prop="country_label" width="130" sortable="custom"><template #default="{ row }"><RegionBadge :country="row.country" :label="row.country_label" /></template></el-table-column>
       <el-table-column label="协议 / 地址" min-width="190">
         <template #default="{ row }">
           <code class="server">{{ row.server }}:{{ row.port }}</code>
@@ -212,5 +215,5 @@ onUnmounted(() => clearTimeout(timer))
       <span>{{ filtered.length }} 个节点 · 经 mihomo 内核按节点配置访问 204 地址计时，测不通的节点不写入订阅；没有内核时退回端口探测（标注「仅端口」）；均不代表带宽。</span>
       <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200]" :pager-count="5" :total="filtered.length" size="small" background layout="total, sizes, prev, pager, next" />
     </div>
-  </AppDrawer>
+  </AppDialog>
 </template>

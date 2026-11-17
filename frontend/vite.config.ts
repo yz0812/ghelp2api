@@ -4,5 +4,5 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: { proxy: { '/api': 'http://127.0.0.1:8000', '/sub': 'http://127.0.0.1:8000' } },
-  build: { chunkSizeWarningLimit: 1200 }
+  build: { chunkSizeWarningLimit: 1200, assetsInlineLimit: 0 }
 })

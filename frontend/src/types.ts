@@ -6,7 +6,7 @@ export interface Account {
 }
 export interface Node {
   id: string; account_id: string; account_name: string; server: string; port: number; region: string;
-  region_label: string; official_name: string | null;
+  region_label: string; region_country: string; region_name: string; official_name: string | null;
   latency: number | null; reachable: boolean | null; tested_at: number | null; enabled: boolean; stale: boolean;
 }
 export interface Subscription {
@@ -30,19 +30,23 @@ export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;
 }
 export interface Preferences {
+  proxy_port_start: number; proxy_port_end: number;
   refresh_minutes: number; probe_minutes: number; probe_timeout_ms: number;
   mihomo: boolean; public_base_url: string; extension_version: string; version: string;
 }
 
-export interface Chain { id: string; name: string; entry_id: string; exit_id: string; enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; status: { state: string; error?: string; current_entry?: string; latency?: number } }
+export interface Chain { id: string; name: string; entry_id: string; exit_id: string; enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; probe?: ProbeResult | null; status: { state: string; error?: string; current_entry?: string; latency?: number } }
 
 export type ThemePreference = 'light' | 'dark' | 'system'
+export interface ProbeResult {
+  reachable: boolean; latency: number | null; entry?: string | null; error: string | null; tested_at: number;
+}
 export interface Entry {
-  id: string; name: string; subscription_id: string; mode: 'auto' | 'fixed'; node_key: string | null; enabled: boolean;
+  id: string; name: string; subscription_id: string; mode: 'auto' | 'fixed'; node_key: string | null; node_keys: string[]; enabled: boolean;
 }
 export interface Exit {
   id: string; name: string; type: 'http' | 'https' | 'socks5'; server: string; port: number;
-  username?: string; tls?: boolean; enabled: boolean; has_password: boolean;
+  username?: string; tls?: boolean; enabled: boolean; has_password: boolean; probe?: ProbeResult | null;
 }
 export interface ConnectionInfo {
   host: string; port: number; username: string; password: string; protocols: string[];

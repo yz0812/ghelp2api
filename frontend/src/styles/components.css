@@ -87,7 +87,7 @@ a.stat:hover { border-color: var(--accent); }
 .form-section > p { font-size: 12px; }
 .help-label { display: inline-flex; align-items: center; gap: 5px; }
 .help-label .el-icon { color: var(--muted); cursor: help; }
-.help-tip { max-width: min(360px, 90vw); line-height: 1.7; }
+.help-tip { max-width: min(360px, calc(100vw - 32px)); overflow-wrap: anywhere; line-height: 1.7; }
 .detail-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 18px; }
 .detail-stats > div { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .detail-stats span { font-size: 12px; color: var(--muted); }
@@ -144,22 +144,36 @@ html.dark .el-radio-button__original-radio:checked + .el-radio-button__inner { c
 .el-tag { font-size: 11px; }
 .el-tag--info { --el-tag-text-color: var(--muted); --el-tag-bg-color: var(--surface-soft); --el-tag-border-color: var(--line); }
 .el-alert__title { line-height: 1.6; overflow-wrap: anywhere; }
-.el-dialog { max-width: calc(100vw - 32px); border-radius: 12px; padding: 24px; }
-.el-dialog__body { max-height: 70dvh; overflow-y: auto; }
-.el-dialog__header { padding-bottom: 20px; }
+.el-dialog { display: flex; flex-direction: column; max-width: calc(100vw - 32px); max-height: calc(100dvh - 48px); border-radius: 12px; padding: 24px; overflow: hidden; }
+.el-dialog__body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.el-dialog__header { flex: none; padding-bottom: 20px; }
 .el-dialog__title, .el-drawer__title { color: var(--ink); font-weight: 600; font-size: 17px; }
-.el-dialog__footer { padding-top: 20px; }
+.el-dialog__footer { flex: none; padding-top: 20px; }
 .el-overlay-dialog { padding: 0; }
-.app-drawer { max-width: 95vw; }
-.app-drawer .el-drawer__header, .navigation-drawer .el-drawer__header { padding: 22px 24px; margin: 0; border-bottom: 1px solid var(--line); }
-.app-drawer .el-drawer__body { padding: 24px; min-height: 0; }
-.app-drawer .el-drawer__footer { padding: 16px 24px; border-top: 1px solid var(--line); background: var(--surface); }
-.el-message-box { max-width: calc(100vw - 32px); }
-.el-message { max-width: calc(100vw - 24px); }
+.app-dialog .el-dialog__header { border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+.app-dialog .el-dialog__footer { border-top: 1px solid var(--line); margin-top: 20px; }
+.navigation-drawer .el-drawer__header { padding: 22px 24px; margin: 0; border-bottom: 1px solid var(--line); }
+.el-message-box { width: 440px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); display: inline-flex; flex-direction: column; padding: 24px; border-radius: 12px; }
+.el-message-box__header { flex: none; padding-bottom: 16px; }
+.el-message-box__title { color: var(--ink); font-size: 17px; font-weight: 600; line-height: 1.5; }
+.el-message-box__headerbtn { top: 12px; right: 12px; width: 44px; height: 44px; }
+.el-message-box__content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.el-message-box__container { align-items: flex-start; }
+.el-message-box__status { flex: none; margin-top: 2px; }
+.el-message-box__message { overflow-wrap: anywhere; }
+.el-message-box__message p { line-height: 1.7; }
+.el-message-box__btns { flex: none; gap: 8px; padding-top: 24px; }
+.el-message-box__btns .el-button + .el-button { margin-left: 0; }
+.el-message { max-width: min(560px, calc(100vw - 24px)); align-items: flex-start; }
+.el-message__content { min-width: 0; max-height: calc(100dvh - 100px); overflow-y: auto; overflow-wrap: anywhere; line-height: 1.6; }
+.el-message__icon { flex: none; margin-top: 3px; }
 .el-form-item { margin-bottom: 20px; }
 .el-form--label-top .el-form-item__label { margin-bottom: 8px; font-size: 13px; }
 .el-input-number { max-width: 100%; }
 .el-select__wrapper, .el-input__wrapper { min-height: 36px; }
+.el-select__popper { max-width: calc(100vw - 32px); }
+.el-select-dropdown { max-width: 100%; }
+.el-select-dropdown__item { height: auto; min-height: 34px; padding-top: 7px; padding-bottom: 7px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
 .el-collapse { --el-collapse-header-bg-color: var(--surface); --el-collapse-content-bg-color: var(--surface); }
 .el-collapse-item__header { font-size: 13px; font-weight: 600; }
 .theme-trigger { gap: 8px; }
@@ -216,12 +230,8 @@ html.dark .el-radio-button__original-radio:checked + .el-radio-button__inner { c
   .settings-block { padding: 20px 16px; }
   .appearance-options { gap: 8px; }
   .appearance-option { flex-direction: column; padding: 14px 6px; font-size: 12px; }
-  .app-drawer { max-width: 100vw; }
-  .app-drawer .el-drawer__header { padding: 18px 16px; }
-  .app-drawer .el-drawer__body { padding: 20px 16px; }
-  .app-drawer .el-drawer__footer { padding: 12px 16px; }
-  .el-dialog { padding: 20px 16px; margin-top: 6vh; }
-  .el-dialog__body { max-height: 65dvh; }
+  .el-dialog { padding: 20px 16px; max-height: calc(100dvh - 32px); }
+  .el-message-box { padding: 20px; }
   .el-button, .el-dropdown-menu__item, .navigation-drawer .nav-item { min-height: 44px; }
   .el-input__wrapper, .el-select__wrapper { min-height: 44px; }
   .el-dialog__headerbtn, .el-drawer__close-btn { min-width: 44px; min-height: 44px; }

@@ -34,7 +34,7 @@ async function submit() {
 </script>
 
 <template>
-  <el-dialog :model-value="open" title="编辑账号" width="500px" @update:model-value="emit('update:open', $event)" @closed="form.token = ''">
+  <el-dialog append-to-body align-center :model-value="open" title="编辑账号" width="500px" @update:model-value="emit('update:open', $event)" @closed="form.token = ''">
     <FormError />
     <el-form label-position="top">
       <el-form-item label="账号名称">

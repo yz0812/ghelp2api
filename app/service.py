@@ -350,10 +350,12 @@ class Service:
             rows = self._subscription_rows(sub, now)
             options = (sub.exclude_failed, sub.max_latency, sub.max_per_country, sub.dedupe)
         exclude_failed, max_latency, max_per_country, dedupe = options
+        history = [dict(row) for row in rows]
+        self._apply_checks(history, now, history=True)
         self._apply_checks(rows, now)
         kept = {id(row) for row in self._filter(rows, *options)}
         seen, result = set(), []
-        for row in rows:
+        for row, previous in zip(rows, history):
             proxy, key = row["proxy"], proxy_key(row["proxy"])
             if id(row) not in kept:
                 if exclude_failed and row["reachable"] is False:
@@ -373,8 +375,8 @@ class Service:
                            "server": proxy.get("server"), "port": proxy.get("port"),
                            "group": row["group"], "origin": row["origin"], "country": row.get("country") or "UN",
                            "country_label": region_country_label(row.get("country") or "UN"),
-                           "reachable": row["reachable"], "latency": row["latency"],
-                           "tested_at": row["tested_at"], "method": row.get("method"),
+                           "reachable": previous["reachable"], "latency": previous["latency"],
+                           "tested_at": previous["tested_at"], "method": previous.get("method"),
                            "included": reason is None, "reason": reason})
         chain_rows = self.chains.details(sub.chain_ids)
         for row in chain_rows:
@@ -382,6 +384,9 @@ class Service:
                 row.update(included=False, reason="链路检测失败")
             if row["included"] and max_latency and row["latency"] is not None and row["latency"] > max_latency:
                 row.update(included=False, reason="链路延迟超过上限")
+            previous = row.pop("last_probe", None)
+            if previous:
+                row.update({key: previous[key] for key in ("reachable", "latency", "tested_at")})
         return result + chain_rows
 
     async def refresh_subscription(self, sub_id):
@@ -601,7 +606,7 @@ class Service:
                              "reachable": None, "latency": None, "tested_at": None})
         return rows
 
-    def _apply_checks(self, rows, now):
+    def _apply_checks(self, rows, now, *, history=False):
         """用最新的有效结论填充节点，返回缺少结论、需要探测的 [(上次结论时间, key, 同指纹的行)]。"""
         kernel = mihomo_available()
         grouped: dict[str, list[dict]] = {}
@@ -620,9 +625,14 @@ class Service:
                            and not (kernel and check.method == "tcp"))
             # 账号测速与指纹缓存都可能有结论：取较新的那个（手动测速只写指纹缓存）
             results = [(r["tested_at"], r["reachable"], r["latency"], "http") for r in group
-                       if r["tested_at"] and now - r["tested_at"] < CHECK_TTL]
-            if check_fresh and check.method != "timeout":
-                results.append((check.tested_at, check.reachable, check.latency, check.method))
+                       if r["tested_at"] and (history or now - r["tested_at"] < CHECK_TTL)]
+            if check and (history or check_fresh) and (history or check.method != "timeout"):
+                if history and check.method == "timeout" and check.result:
+                    previous = check.result
+                    results.append((previous["tested_at"], previous["reachable"], previous["latency"], previous["method"]))
+                else:
+                    results.append((check.tested_at, None if check.method == "timeout" else check.reachable,
+                                    check.latency, check.method))
             if results:
                 tested_at, reachable, latency, method = max(results, key=lambda item: item[0])
                 for row in group:
@@ -742,6 +752,15 @@ class Service:
         if checks:
             with self.db.begin() as db:
                 for check in checks:
+                    if check.method == "timeout":
+                        previous = db.get(ProxyCheck, check.key)
+                        if previous:
+                            check.result = previous.result or (None if previous.method == "timeout" else {
+                                "reachable": previous.reachable, "latency": previous.latency,
+                                "tested_at": previous.tested_at, "method": previous.method})
+                    else:
+                        check.result = {"reachable": check.reachable, "latency": check.latency,
+                                        "tested_at": check.tested_at, "method": check.method}
                     db.merge(check)
 
     async def _probe_proxy(self, proxy):
@@ -939,6 +958,12 @@ class Service:
                     node = db.get(Node, node_id)
                     if node and db.get(Account, node.account_id).pk == snapshot_pk:
                         node.latency, node.reachable, node.tested_at = latency, latency is not None, time.time()
+                        key = proxy_key({"type": "http", "server": server, "port": port,
+                                         "tls": True, "skip-cert-verify": True, "udp": False})
+                        db.merge(ProxyCheck(key=key, reachable=node.reachable, latency=latency,
+                                            method="http", tested_at=node.tested_at,
+                                            result={"reachable": node.reachable, "latency": latency,
+                                                    "tested_at": node.tested_at, "method": "http"}))
                 self.progress(job_id, "节点连接失败" if latency is None else None)
         try:
             await asyncio.gather(*(one(i) for i in ids))

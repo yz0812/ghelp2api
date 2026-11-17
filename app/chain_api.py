@@ -17,12 +17,17 @@ class EntryInput(BaseModel):
     subscription_id: str
     mode: Literal["auto", "fixed"] = "auto"
     node_key: str | None = None
+    node_keys: list[str] | None = None
     enabled: bool = True
 
     @model_validator(mode="after")
     def fixed_key(self):
-        if self.mode == "fixed" and not self.node_key:
-            raise ValueError("固定模式需要选择入口节点")
+        keys = self.node_keys if self.node_keys is not None else ([self.node_key] if self.node_key else [])
+        keys = list(dict.fromkeys(k.strip() for k in keys if k.strip()))
+        if self.mode == "fixed" and not keys:
+            raise ValueError("固定模式需要至少选择一个入口节点")
+        self.node_keys = keys if self.mode == "fixed" else []
+        self.node_key = self.node_keys[0] if self.node_keys else None
         return self
 
 
@@ -64,13 +69,15 @@ def install(app, service, secured):
 
     def view(row):
         if isinstance(row, Entry):
-            return {k: getattr(row, k) for k in ("id", "name", "subscription_id", "mode", "node_key", "enabled")}
+            return {k: getattr(row, k) for k in ("id", "name", "subscription_id", "mode", "node_key", "node_keys", "enabled")}
         if isinstance(row, Exit):
             config = json.loads(service.secrets.decrypt(row.config_cipher))
             password = config.pop("password", None)
-            return dict(config, id=row.id, name=row.name, enabled=row.enabled, has_password=bool(password))
+            return dict(config, id=row.id, name=row.name, enabled=row.enabled, has_password=bool(password),
+                        probe=manager.cached_result(row))
         return {k: getattr(row, k) for k in ("id", "name", "entry_id", "exit_id", "enabled", "relay_enabled",
-                                            "listen_port", "public_host")} | {"status": manager.status.get(row.id, {"state": "pending"})}
+                                            "listen_port", "public_host")} | {"status": manager.status.get(row.id, {"state": "pending"}),
+                                                                           "probe": manager.cached_result(row)}
 
     def get(db, model, id):
         row = db.get(model, id)
@@ -100,13 +107,17 @@ def install(app, service, secured):
         await manager.sync()
         return await connection(id)
 
-    @router.post("/chains/{id}/probe", status_code=202)
+    @router.post("/chains/{id}/probe")
     async def probe(id: str):
         with service.db() as db:
             get(db, Chain, id)
-        job = service.new_job("chain_probe", 1)
-        service.spawn(manager.probe(id, job))
-        return {"job_id": job}
+        return await manager.probe(id)
+
+    @router.post("/exits/{id}/probe")
+    async def probe_exit(id: str):
+        with service.db() as db:
+            get(db, Exit, id)
+        return await manager.probe_exit(id)
 
     @router.get("/{kind}")
     async def listing(kind: Literal["entries", "exits", "chains"]):
@@ -124,8 +135,10 @@ def install(app, service, secured):
                     raise HTTPException(422, "入口订阅需要包含普通账号或订阅源节点")
                 for k, v in payload.model_dump().items():
                     setattr(row, k, v)
-                if payload.mode == "fixed" and not manager.candidates(row):
-                    raise HTTPException(422, "所选固定节点已失效，请重新选择")
+                if payload.mode == "fixed":
+                    available = {key for key, _ in manager.candidates(row, check_enabled=False)}
+                    if not set(payload.node_keys).issubset(available):
+                        raise HTTPException(422, "所选固定节点中有节点已失效，请重新选择")
             elif kind == "exits":
                 old = json.loads(service.secrets.decrypt(row.config_cipher)) if id else {}
                 config = payload.model_dump(include={"type", "server", "port", "username", "tls"})
@@ -163,8 +176,13 @@ def install(app, service, secured):
                 if not port:
                     port = next((p for p in range(settings.proxy_port_start, settings.proxy_port_end + 1)
                                  if p not in occupied), None)
-                if not port or port in occupied or not settings.proxy_port_start <= port <= settings.proxy_port_end:
-                    raise HTTPException(422, "代理端口已使用或超出配置范围")
+                port_range = f"{settings.proxy_port_start}–{settings.proxy_port_end}"
+                if not port:
+                    raise HTTPException(422, f"代理端口范围 {port_range} 已全部分配，请释放端口或扩大配置范围")
+                if not settings.proxy_port_start <= port <= settings.proxy_port_end:
+                    raise HTTPException(422, f"代理端口 {port} 超出允许范围，请填写 {port_range} 内的端口")
+                if port in occupied:
+                    raise HTTPException(422, f"代理端口 {port} 已被其他链路使用，请选择其他端口（允许范围 {port_range}）")
                 for k, v in payload.model_dump(exclude={"listen_port"}).items():
                     setattr(row, k, v)
                 row.listen_port = port

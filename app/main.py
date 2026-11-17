@@ -19,7 +19,7 @@ from app.config import APP_VERSION, Settings
 from app.db import make_db
 from app.mihomo import available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription, Chain, Entry
-from app.regions import label as region_label
+from app.regions import label as region_label, describe as describe_region
 from app.schemas import (AccountInput, AccountPatch, ImportInput, LoginInput,
                          PreferencesInput, ProbeInput, SourceContentInput, SourceFileInput,
                          SourceImportInput, SourceInput, SourcePatch,
@@ -243,13 +243,22 @@ def create_app(settings: Settings | None = None):
     @app.get("/api/v1/nodes", dependencies=secured)
     async def nodes():
         with db_factory() as db:
-            return [{"id": n.id, "account_id": a.id, "account_name": a.name, "server": n.server,
+            rows = [{"id": n.id, "account_id": a.id, "account_name": a.name, "server": n.server,
                      "port": n.port, "region": n.region, "region_label": region_label(n.region),
+                     "region_country": describe_region(n.region)["country"],
+                     "region_name": describe_region(n.region)["name"],
                      "official_name": n.official_name,
                      "latency": n.latency, "reachable": n.reachable,
                      "tested_at": n.tested_at, "enabled": a.enabled,
                      "stale": not a.last_success or time.time() - a.last_success > 3600}
                     for n, a in db.execute(select(Node, Account).join(Account)).all()]
+        for row in rows:
+            row["proxy"] = {"type": "http", "server": row["server"], "port": row["port"],
+                            "tls": True, "skip-cert-verify": True, "udp": False}
+        service._apply_checks(rows, time.time(), history=True)
+        for row in rows:
+            row.pop("proxy")
+        return rows
 
     @app.post("/api/v1/probes", dependencies=secured, status_code=202)
     async def probe(payload: ProbeInput):
@@ -635,6 +644,8 @@ def create_app(settings: Settings | None = None):
         return service.preferences() | {"public_base_url": settings.public_base_url,
                                         "extension_version": settings.extension_version,
                                         "version": APP_VERSION,
+                                        "proxy_port_start": settings.proxy_port_start,
+                                        "proxy_port_end": settings.proxy_port_end,
                                         "mihomo": mihomo_available()}
 
     @app.put("/api/v1/settings", dependencies=secured)

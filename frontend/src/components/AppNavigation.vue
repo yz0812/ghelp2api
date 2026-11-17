@@ -7,7 +7,7 @@ const route = useRoute()
 const groups = [
   { label: '', items: [{ name: 'overview', label: '连接总览', icon: Grid }] },
   { label: '资源', items: [{ name: 'accounts', label: '账号管理', icon: Key }, { name: 'nodes', label: '节点列表', icon: Connection }, { name: 'sources', label: '订阅源', icon: Files }] },
-  { label: '连接', items: [{ name: 'chains', label: '入口与出口', icon: Share }, { name: 'subscriptions', label: '订阅管理', icon: Link }] },
+  { label: '连接', items: [{ name: 'chains', label: '链式', icon: Share }, { name: 'subscriptions', label: '订阅管理', icon: Link }] },
   { label: '系统', items: [{ name: 'jobs', label: '任务记录', icon: Tickets }, { name: 'settings', label: '系统设置', icon: Setting }] }
 ]
 </script>

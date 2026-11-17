@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import AppDrawer from '../components/AppDrawer.vue'
+import AppDialog from '../components/AppDialog.vue'
 import FilterBar from '../components/FilterBar.vue'
 import type { Job } from '../types'
 import PageHeading from '../components/PageHeading.vue'
@@ -66,7 +66,7 @@ watch([pageSize, () => filtered.value.length], () => {
       <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[20, 50, 100]" :pager-count="5" :total="filtered.length" size="small" background layout="total, sizes, prev, pager, next" />
     </div>
   </section>
-  <AppDrawer v-model="detailVisible" title="任务错误详情" :form="false" @closed="detail = null">
+  <AppDialog v-model="detailVisible" title="任务错误详情" :form="false" @closed="detail = null">
     <template v-if="detail"><h3>{{ jobKind[detail.kind] || detail.kind }} · {{ time(detail.created_at) }}</h3><p class="muted">共 {{ detail.errors.length }} 项错误</p><ol class="error-list"><li v-for="(message, index) in detail.errors" :key="index">{{ message }}</li></ol></template>
-  </AppDrawer>
+  </AppDialog>
 </template>

@@ -80,6 +80,14 @@ CITIES: dict[str, str] = {
 ENGLISH_CITIES = {
     "Seattle": "US", "Silicon Valley": "US", "Los Angeles": "US",
     "Mexico City": "MX", "Madrid": "ES",
+    "Tokyo": "JP", "Osaka": "JP", "Seoul": "KR", "Taipei": "TW",
+    "Hong Kong": "HK", "Singapore": "SG", "London": "GB", "Frankfurt": "DE",
+    "Berlin": "DE", "Paris": "FR", "Amsterdam": "NL", "Moscow": "RU",
+    "Toronto": "CA", "Vancouver": "CA", "Sydney": "AU", "Melbourne": "AU",
+    "Auckland": "NZ", "Mumbai": "IN", "Jakarta": "ID", "Bangkok": "TH",
+    "New York": "US", "San Jose": "US", "Chicago": "US", "Dallas": "US",
+    "United States": "US", "United Kingdom": "GB", "Japan": "JP", "Germany": "DE",
+    "Canada": "CA", "Australia": "AU", "France": "FR", "Russia": "RU",
 }
 
 # 节点名里会被当作国家代号识别的两字母代码（含 REGIONS 未收录但机场常用的）。
@@ -98,15 +106,16 @@ _NAMES_BY_LENGTH = sorted(_NAMES.items(), key=lambda item: -len(item[0]))
 
 def flag(country: str) -> str:
     """地区代码两字母 → 国旗 emoji（区域指示符字符），非法国家码返回空串。"""
-    if len(country) != 2 or not country.isalpha():
+    country = str(country).upper()
+    if country not in CODES and country != "UN":
         return ""
     return "".join(chr(0x1F1E6 + ord(ch) - ord("A")) for ch in country.upper())
 
 
 def split(code: str) -> tuple[str, str]:
     """代号 → (国旗, 中文名)；未收录的代号原样返回。"""
-    name, country = REGIONS.get(code.upper(), (code, "UN"))
-    return flag(country), name
+    info = describe(code)
+    return flag(info["country"]), info["name"]
 
 
 def label(code: str) -> str:
@@ -117,7 +126,8 @@ def label(code: str) -> str:
 
 def country_label(code: str) -> str:
     """国家两字母代码 → '🇺🇸 美国'；没有中文名的只显示国旗和代码，UN 显示「未知」。"""
-    if not code or code == "UN":
+    code = country(code)
+    if code == "UN":
         return UNKNOWN[0]
     name = REGIONS[code][0] if code in REGIONS and REGIONS[code][1] == code else code
     emoji = flag(code)
@@ -126,17 +136,23 @@ def country_label(code: str) -> str:
 
 def country(code: str) -> str:
     """入口代号 → 国家两字母代码（LOS/圣何塞都归 US）；未收录的代号返回 UN。"""
-    return REGIONS.get(str(code).upper(), ("", "UN"))[1]
+    code = str(code or "").strip().upper()
+    return REGIONS[code][1] if code in REGIONS else code if code in CODES else "UN"
+
+
+def describe(code: str) -> dict[str, str]:
+    """统一入口代号解析；保留城市/运营商名称，另给出国旗所需国家码。"""
+    normalized = str(code or "").strip().upper()
+    return {"code": normalized, "country": country(normalized),
+            "name": REGIONS.get(normalized, (normalized or UNKNOWN[0], "UN"))[0]}
 
 
 def _from_flag(name: str) -> str | None:
     """名字里的国旗 emoji（两个区域指示符）→ 国家代码。"""
-    letters = [ord(ch) - 0x1F1E6 for ch in name if 0x1F1E6 <= ord(ch) <= 0x1F1FF]
-    for first, second in zip(letters, letters[1:]):  # 相邻的两个区域指示符才是一面旗
-        if 0 <= first < 26 and 0 <= second < 26:
-            code = chr(65 + first) + chr(65 + second)
-            if code in CODES:
-                return code
+    for pair in re.findall(r"[\U0001F1E6-\U0001F1FF]{2}", name):
+        code = "".join(chr(ord(ch) - 0x1F1E6 + 65) for ch in pair)
+        if code in CODES:
+            return code
     return None
 
 
@@ -161,6 +177,6 @@ def detect(name: str) -> str | None:
         if re.search(r"\b" + re.escape(text) + r"\b", name, re.I):
             return code
     if found := next((t for t in re.findall(r"(?<![A-Za-z0-9])[A-Z]{2}(?![A-Za-z0-9])", name)
-                      if t in CODES), None):
-        return found
+                      if t in CODES or t == "UK"), None):
+        return country(found)
     return None

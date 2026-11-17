@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.models import Chain, Exit, Subscription
+from app.models import Chain, Entry, Exit, Source, Subscription
 
 
 def setup_chain(client, fixed=False):
@@ -79,6 +79,139 @@ def test_fixed_entry_and_password_preserved(client):
     assert response.status_code == 422
 
 
+def test_fixed_entry_pool_validation_and_native_export(client):
+    sub, entry, _, chain = setup_chain(client, True)
+    assert entry['node_keys'] == [entry['node_key']]  # Legacy API remains supported.
+    nodes = client.get(f"/api/v1/subscriptions/{sub['id']}/nodes").json()['nodes']
+    keys = [node['key'] for node in nodes]
+    payload = {"name": "多选入口", "subscription_id": sub['id'], "mode": "fixed", "node_keys": keys + keys}
+    url = f"/api/v1/entries/{entry['id']}"
+    response = client.put(url, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()['node_keys'] == keys
+    service = client.app.state.service
+    with service.db.begin() as db:
+        source = db.get(Source, sub['source_ids'][0])
+        source.proxies = source.proxies + [{"name": "not-selected", "type": "http", "server": "other.example.com", "port": 8080}]
+    export = client.post('/api/v1/subscriptions', json={"name": "多选链路订阅", "chain_ids": [chain['id']]}).json()
+    config = yaml.safe_load(client.get(export['clash_url']).text)
+    assert len(config['proxies']) == 4
+    assert all(node['server'] != 'other.example.com' for node in config['proxies'])
+    group = next(g for g in config['proxy-groups'] if g['name'].startswith('链路 ·'))
+    assert group['type'] == 'url-test' and len(group['proxies']) == 2
+    assert group['tolerance'] == 0 and group['interval'] == 300 and group['lazy'] is False
+    for invalid in ([], ['missing'], [keys[0], 'missing']):
+        assert client.put(url, json=dict(payload, node_keys=invalid)).status_code == 422
+    assert next(row for row in client.get('/api/v1/entries').json() if row['id'] == entry['id'])['node_keys'] == keys
+    assert client.put(url, json=dict(payload, enabled=False)).status_code == 200
+    assert client.put(url, json=payload).status_code == 200
+    # A disappeared selected node does not widen the pool to unselected nodes.
+    with service.db.begin() as db:
+        source = db.get(Source, sub['source_ids'][0])
+        source.proxies = source.proxies[1:]
+    with service.db() as db:
+        graph, group = service.chains.build(db.get(Chain, chain['id']))
+        assert len(graph) == 2 and len(group['proxies']) == 1
+    with service.db.begin() as db:
+        source = db.get(Source, sub['source_ids'][0])
+        source.proxies = source.proxies[1:]
+    from app.chains import ChainError
+    with service.db() as db, pytest.raises(ChainError, match='所选入口节点均已失效'):
+        service.chains.build(db.get(Chain, chain['id']))
+
+
+def test_entry_pool_migration_preserves_legacy_selection(tmp_path):
+    import sqlalchemy as sa
+    from alembic import command
+    from alembic.config import Config
+    config = Config('alembic.ini')
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'migration.db').as_posix()}")
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, '0008')
+        # Exercise the old entry shape, before the new JSON column exists.
+        connection.execute(sa.text("INSERT INTO entries (id,name,subscription_id,mode,node_key,enabled) VALUES ('legacy','legacy','subscription','fixed','selected-key',1), ('auto','auto','subscription','auto',NULL,1)"))
+        command.upgrade(config, 'head')
+        rows = dict(connection.execute(sa.text('SELECT id,node_keys FROM entries')).all())
+        assert json.loads(rows['legacy']) == ['selected-key']
+        assert json.loads(rows['auto']) == []
+    engine.dispose()
+
+
+def test_port_range_and_actionable_errors(client):
+    settings = client.app.state.service.settings
+    settings.proxy_port_start = 25000
+    settings.proxy_port_end = 25001
+    config = client.get('/api/v1/settings').json()
+    assert (config['proxy_port_start'], config['proxy_port_end']) == (25000, 25001)
+    _, entry, exit, chain = setup_chain(client)
+    assert chain['listen_port'] == 25000
+    payload = {"name": "端口测试", "entry_id": entry['id'], "exit_id": exit['id']}
+    for port, message in [(24999, '超出允许范围'), (25002, '超出允许范围'), (25000, '已被其他链路使用')]:
+        response = client.post('/api/v1/chains', json=dict(payload, listen_port=port))
+        assert response.status_code == 422
+        assert message in response.json()['detail']
+        assert '25000–25001' in response.json()['detail']
+    response = client.post('/api/v1/chains', json=dict(payload, listen_port=25001))
+    assert response.status_code == 201
+    response = client.put(f"/api/v1/chains/{chain['id']}", json=payload)
+    assert response.status_code == 200
+    assert response.json()['listen_port'] == 25000
+    response = client.post('/api/v1/chains', json=payload)
+    assert response.status_code == 422
+    assert '25000–25001 已全部分配' in response.json()['detail']
+
+
+def test_manual_probes_return_final_results_without_background_jobs(client, monkeypatch):
+    import asyncio
+    _, _, exit, chain = setup_chain(client)
+    manager = client.app.state.service.chains
+    calls = []
+
+    async def measured(proxies, group):
+        await asyncio.sleep(.01)
+        calls.append(len(proxies))
+        return {name: 30 + index * 10 for index, name in enumerate(group['proxies'])}
+
+    monkeypatch.setattr(manager, '_measure', measured)
+    before = {job['id'] for job in client.get('/api/v1/jobs').json()}
+    response = client.post(f"/api/v1/chains/{chain['id']}/probe")
+    assert response.status_code == 200
+    assert response.json()['reachable'] is True and response.json()['latency'] == 30
+    assert response.json()['entry'] and 'job_id' not in response.json()
+    response = client.post(f"/api/v1/exits/{exit['id']}/probe")
+    assert response.status_code == 200
+    assert response.json()['reachable'] is True and response.json()['latency'] == 30
+    assert calls == [4, 1]
+    assert {job['id'] for job in client.get('/api/v1/jobs').json()} == before
+
+    async def failed(*args):
+        return {}
+
+    monkeypatch.setattr(manager, '_measure', failed)
+    for kind, id in [('chains', chain['id']), ('exits', exit['id'])]:
+        result = client.post(f'/api/v1/{kind}/{id}/probe').json()
+        assert result['reachable'] is False and result['latency'] is None and result['error']
+        assert 'synthetic-password' not in json.dumps(result)
+    assert manager.details([chain['id']])[0]['reachable'] is False
+
+    async def timed_out(*args):
+        raise TimeoutError()
+
+    monkeypatch.setattr(manager, '_measure', timed_out)
+    for kind, id in [('chains', chain['id']), ('exits', exit['id'])]:
+        assert '超时' in client.post(f'/api/v1/{kind}/{id}/probe').json()['error']
+    assert client.post('/api/v1/exits/missing/probe').status_code == 404
+
+
+def test_manual_probes_explain_missing_core(client):
+    _, _, exit, chain = setup_chain(client)
+    for kind, id in [('chains', chain['id']), ('exits', exit['id'])]:
+        result = client.post(f'/api/v1/{kind}/{id}/probe').json()
+        assert result['reachable'] is False and result['latency'] is None
+        assert '缺少 Mihomo' in result['error']
+
+
 def test_port_conflict_disable_and_details(client):
     _, entry, exit, chain = setup_chain(client)
     response = client.post('/api/v1/chains', json={"name": "重复端口", "entry_id": entry['id'], "exit_id": exit['id'], "listen_port": chain['listen_port']})
@@ -101,11 +234,13 @@ def test_invalid_exit_content(client, content):
     assert 'secret' not in response.text
 
 
-def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
+@pytest.mark.parametrize('fixed_pool', [False, True])
+def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool):
     import http.server
     import select
     import socket
     import threading
+    import time
     import httpx
     import app.chains as module
     from app.mihomo import free_port
@@ -114,7 +249,7 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
     binary = (Path('.cache/mihomo/mihomo.exe') if Path('.cache/mihomo/mihomo.exe').exists() else Path('.cache/mihomo/mihomo')).resolve()
     if not binary.exists():
         pytest.skip('本地未安装真实内核')
-    hits = {'entry': 0, 'exit': 0}
+    hits = {'entry': 0, 'slow': 0, 'exit': 0}
 
     class Target(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -128,6 +263,8 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
         class Proxy(Target):
             def do_CONNECT(self):
                 hits[label] += 1
+                if label == 'slow':
+                    time.sleep(.2)
                 host, port = self.path.rsplit(':', 1)
                 with socket.create_connection((host, int(port)), timeout=5) as remote:
                     self.send_response(200)
@@ -145,12 +282,12 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
         return Proxy
 
     servers = [http.server.ThreadingHTTPServer(('127.0.0.1', 0), cls)
-               for cls in (Target, handler('entry'), handler('exit'))]
+               for cls in (Target, handler('entry'), handler('exit'), handler('slow'))]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         sub, entry, exit, chain = setup_chain(client)
-        target_port, entry_port, exit_port = [s.server_port for s in servers]
+        target_port, entry_port, exit_port, slow_port = [s.server_port for s in servers]
         target = f'http://127.0.0.1:{target_port}/'
         monkeypatch.setattr(module, 'TEST_URL', target)
         service = client.app.state.service
@@ -159,7 +296,14 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
         with service.db.begin() as db:
             source = db.get(Source, sub['source_ids'][0])
             source.proxies = [{"name": "failed-entry", "type": "http", "server": "127.0.0.1", "port": free_port()},
+                              {"name": "slow", "type": "http", "server": "127.0.0.1", "port": slow_port},
                               {"name": "local", "type": "http", "server": "127.0.0.1", "port": entry_port}]
+            if fixed_pool:
+                from app.service import proxy_key
+                selected = db.get(Entry, entry['id'])
+                selected.mode = 'fixed'
+                selected.node_keys = [proxy_key(proxy) for proxy in source.proxies]
+                selected.node_key = selected.node_keys[0]
             db.get(Exit, exit['id']).config_cipher = service.secrets.encrypt(json.dumps({"name": "local-exit", "type": "http", "server": "127.0.0.1", "port": exit_port}))
             db.get(Chain, chain['id']).listen_port = free_port()
         monkeypatch.setenv('MIHOMO_BIN', str(binary))
@@ -170,11 +314,21 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch):
         from urllib.parse import quote
         client.portal.call(partial(service.chains._request, f"/group/{quote(group, safe='')}/delay",
                                    params={"url": target, "timeout": 1000}, timeout=5))
+        if fixed_pool:
+            status = client.portal.call(service.chains.inspect)[chain['id']]
+            assert status['current_entry'].endswith('local'), status
+            assert hits['slow'] > 0  # Both working candidates were measured.
         conn = client.get(f"/api/v1/chains/{chain['id']}/connection").json()
         proxy = f"http://{conn['username']}:{conn['password']}@127.0.0.1:{conn['port']}"
         with httpx.Client(proxy=proxy, trust_env=False, timeout=5) as transport:
             assert transport.get(target).status_code == 204
         assert hits['entry'] > 0 and hits['exit'] > 0
+        live = client.post(f"/api/v1/chains/{chain['id']}/probe")
+        assert live.status_code == 200 and live.json()['reachable'] is True
+        assert live.json()['latency'] > 0 and live.json()['entry'].endswith('local')
+        direct = client.post(f"/api/v1/exits/{exit['id']}/probe")
+        assert direct.status_code == 200 and direct.json()['reachable'] is True
+        assert direct.json()['latency'] > 0
         job = service.new_job('chain_probe', 1)
         client.portal.call(service.chains.probe, chain['id'], job)
         assert service.chains.details([chain['id']])[0]['reachable'] is True

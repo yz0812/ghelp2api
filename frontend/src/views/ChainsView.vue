@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Connection, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, CopyDocument, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import PageHeading from '../components/PageHeading.vue'
-import AppDrawer from '../components/AppDrawer.vue'
+import AppDialog from '../components/AppDialog.vue'
+import EntryNodeSelectDialog from '../components/EntryNodeSelectDialog.vue'
 import ActionMenu from '../components/ActionMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FilterBar from '../components/FilterBar.vue'
+import ProbeFeedback from '../components/ProbeFeedback.vue'
 import { api } from '../api'
-import { action, busy, chains, load, subscriptions, settings, schedulePoll, clearError } from '../store'
+import { action, busy, chains, load, subscriptions, settings, clearError } from '../store'
 import { copyText } from '../utils'
-import type { Chain, ConnectionInfo, Entry, Exit, MenuAction, SubNode } from '../types'
+import type { Chain, ConnectionInfo, Entry, Exit, MenuAction, SubNode, ProbeResult } from '../types'
 
 type Kind = 'entries' | 'exits' | 'chains'
 type EntryForm = Omit<Entry, 'id'> & { id?: string }
@@ -24,33 +26,51 @@ const data = reactive<{ entries: Entry[], exits: Exit[], chains: Chain[] }>({ en
 const labels: Record<Kind, string> = { chains: '链路', entries: '入口', exits: '出口' }
 const statusLabels: Record<string, string> = { running: '监听运行中', pending: '等待启动', error: '启动失败', disabled: '中转关闭' }
 const initialLoading = ref(true)
+const probes = reactive<Record<string, { loading: boolean, result?: ProbeResult }>>({})
+function probeResult(kind: 'chains' | 'exits', row: Chain | Exit) {
+  const local = probes[kind + ':' + row.id]?.result
+  return local && (!row.probe || local.tested_at > row.probe.tested_at) ? local : row.probe
+}
 const search = ref('')
 const filtered = computed(() => data[tab.value].filter(row => row.name.toLowerCase().includes(search.value.toLowerCase())))
 const filteredChains = computed(() => data.chains.filter(row => row.name.toLowerCase().includes(search.value.toLowerCase())))
 const dialog = ref(false)
 const editing = ref<Kind>('chains')
-const entryForm = reactive<EntryForm>({ name: '', subscription_id: '', mode: 'auto', node_key: null, enabled: true })
+const entryForm = reactive<EntryForm>({ name: '', subscription_id: '', mode: 'auto', node_key: null, node_keys: [], enabled: true })
 const exitForm = reactive<ExitForm>({ name: '', type: 'http', server: '', port: 80, username: '', password: '', tls: false, content: '', enabled: true })
 const chainForm = reactive<ChainForm>({ name: '', entry_id: '', exit_id: '', enabled: true, relay_enabled: true, listen_port: undefined, public_host: '' })
 const activeForm = computed(() => editing.value === 'entries' ? entryForm : editing.value === 'exits' ? exitForm : chainForm)
 const inputMode = ref<'manual' | 'yaml'>('manual')
 const nodes = ref<SubNode[]>([])
 const nodesLoading = ref(false)
+const nodePickerVisible = ref(false)
+const selectedNodeNames = computed(() => nodes.value.filter(n => entryForm.node_keys.includes(n.key)).map(n => n.name).join('、'))
+watch(dialog, open => { if (!open) nodePickerVisible.value = false })
 const connection = ref<ConnectionInfo | null>(null)
+const copyingConnection = ref('')
 const connectionVisible = ref(false)
 const passwordVisible = ref(false)
 const manualCopy = ref('')
 const eligible = computed(() => subscriptions.value.filter(s => s.account_ids.length || s.source_ids.length))
 let nodeRequest = 0
 
+const portError = computed(() => {
+  const port = chainForm.listen_port
+  if (port == null) return ''
+  if (!Number.isInteger(port) || port < settings.proxy_port_start || port > settings.proxy_port_end) {
+    return `请填写 ${settings.proxy_port_start}–${settings.proxy_port_end} 范围内的整数端口`
+  }
+  const owner = data.chains.find(row => row.id !== chainForm.id && row.listen_port === port)
+  return owner ? `端口 ${port} 已被链路「${owner.name}」使用，请更换端口` : ''
+})
+
 const canSave = computed(() => {
   if (!activeForm.value.name.trim()) return false
-  if (editing.value === 'entries') return !!entryForm.subscription_id && (entryForm.mode === 'auto' || (!nodesLoading.value && nodes.value.some(n => n.key === entryForm.node_key)))
+  if (editing.value === 'entries') return !!entryForm.subscription_id && (entryForm.mode === 'auto' || (!nodesLoading.value && entryForm.node_keys.length > 0 && entryForm.node_keys.every(key => nodes.value.some(n => n.key === key))))
   if (editing.value === 'exits') return inputMode.value === 'yaml' ? !!exitForm.content.trim() : !!exitForm.server.trim() && !!exitForm.port
-  return !!chainForm.entry_id && !!chainForm.exit_id
+  return !!chainForm.entry_id && !!chainForm.exit_id && !portError.value
 })
 const chainActions: MenuAction[] = [
-  { key: 'probe', label: '检测链路' },
   { key: 'generate', label: '生成订阅' },
   { key: 'rotate', label: '轮换认证', divided: true },
   { key: 'remove', label: '删除链路', danger: true }
@@ -69,7 +89,8 @@ function edit(kind: Kind, row?: Entry | Exit | Chain) {
   clearError()
   if (kind === 'entries') {
     const entry = row as Entry | undefined
-    Object.assign(entryForm, { id: undefined, name: '', subscription_id: '', mode: 'auto', node_key: null, enabled: true }, entry || {})
+    Object.assign(entryForm, { id: undefined, name: '', subscription_id: '', mode: 'auto', node_key: null, enabled: true }, entry || {},
+      { node_keys: [...(entry?.node_keys ?? (entry?.node_key ? [entry.node_key] : []))] })
   } else if (kind === 'exits') {
     const exit = row as Exit | undefined
     inputMode.value = 'manual'
@@ -98,7 +119,9 @@ watch(() => entryForm.subscription_id, async id => {
     const result: { nodes: SubNode[] } = await api('/subscriptions/' + id + '/nodes')
     if (request !== nodeRequest) return
     nodes.value = result.nodes.filter(n => n.included && n.type !== 'chain')
-    if (entryForm.node_key && !nodes.value.some(n => n.key === entryForm.node_key)) entryForm.node_key = null
+    const validKeys = entryForm.node_keys.filter(key => nodes.value.some(n => n.key === key))
+    if (validKeys.length !== entryForm.node_keys.length) ElMessage.warning('部分已选节点在当前订阅中不可用，已移除，请检查选择')
+    entryForm.node_keys = validKeys
   } catch (e: unknown) {
     if (request === nodeRequest) ElMessage.error(e instanceof Error ? e.message : '入口节点加载失败')
   } finally {
@@ -113,8 +136,8 @@ async function save() {
     const id = activeForm.value.id
     let payload: Record<string, unknown>
     if (kind === 'entries') {
-      const { id: _, ...values } = entryForm
-      payload = { ...values, node_key: values.mode === 'fixed' ? values.node_key : null }
+      const { id: _, node_key: _legacyKey, ...values } = entryForm
+      payload = { ...values, node_keys: values.mode === 'fixed' ? values.node_keys : [] }
     } else if (kind === 'exits') {
       const { id: _, password, content, ...values } = exitForm
       payload = inputMode.value === 'yaml'
@@ -125,6 +148,7 @@ async function save() {
       payload = { ...values, listen_port: values.listen_port ?? null }
     }
     await api('/' + kind + (id ? '/' + id : ''), id ? 'PUT' : 'POST', payload)
+    for (const key of Object.keys(probes)) if (!probes[key]?.loading) delete probes[key]
     dialog.value = false
     await Promise.all([refresh(), load()])
     ElMessage.success('配置已保存')
@@ -134,6 +158,7 @@ async function remove(kind: Kind, row: Entry | Exit | Chain) {
   await action(async () => {
     await ElMessageBox.confirm('删除「' + row.name + '」？', '删除配置', { type: 'warning' })
     await api('/' + kind + '/' + row.id, 'DELETE')
+    delete probes[kind + ':' + row.id]
     await Promise.all([refresh(), load()])
     ElMessage.success('配置已删除')
   })
@@ -148,13 +173,15 @@ async function showConnection(row: Chain, rotate = false) {
     await refresh()
   })
 }
-async function probe(row: Chain) {
-  await action(async () => {
-    await api('/chains/' + row.id + '/probe', 'POST')
-    await load()
-    schedulePoll()
-    ElMessage.success('已开始整条链路检测，结果可在任务记录查看')
-  })
+async function probe(kind: 'chains' | 'exits', id: string) {
+  const key = kind + ':' + id
+  if (probes[key]?.loading) return
+  probes[key] = { loading: true }
+  try {
+    probes[key].result = await api('/' + kind + '/' + id + '/probe', 'POST')
+  } catch (e) {
+    probes[key].result = { reachable: false, latency: null, error: e instanceof Error ? e.message : '检测失败，请重试', tested_at: Date.now() / 1000 }
+  } finally { probes[key].loading = false }
 }
 async function generate(row: Chain) {
   await action(async () => {
@@ -164,7 +191,6 @@ async function generate(row: Chain) {
   })
 }
 function onChainAction(key: string, row: Chain) {
-  if (key === 'probe') return probe(row)
   if (key === 'generate') return generate(row)
   if (key === 'rotate') return showConnection(row, true)
   if (key === 'remove') return remove('chains', row)
@@ -177,9 +203,7 @@ function relayAddress(row: Chain) {
   if (host.includes(':') && !host.startsWith('[')) host = '[' + host + ']'
   return host + ':' + row.listen_port
 }
-const connectionFields = computed(() => {
-  const c = connection.value
-  if (!c) return []
+function formatConnection(c: ConnectionInfo) {
   const host = c.host.includes(':') && !c.host.startsWith('[') ? '[' + c.host + ']' : c.host
   const address = host + ':' + c.port
   const auth = encodeURIComponent(c.username) + ':' + encodeURIComponent(c.password)
@@ -191,7 +215,25 @@ const connectionFields = computed(() => {
     { label: 'HTTP URI', value: 'http://' + auth + '@' + address, masked: 'http://' + maskedAuth + '@' + address },
     { label: 'SOCKS5 URI', value: 'socks5://' + auth + '@' + address, masked: 'socks5://' + maskedAuth + '@' + address }
   ]
-})
+}
+const connectionFields = computed(() => connection.value ? formatConnection(connection.value) : [])
+async function copyChainConnection(row: Chain) {
+  if (busy.value || copyingConnection.value) return
+  copyingConnection.value = row.id
+  try {
+    await action(async () => {
+      const info: ConnectionInfo = await api('/chains/' + row.id + '/connection')
+      const text = formatConnection(info).map(field => field.label + '：' + field.value).join('\n')
+      if (!await copyText(text)) {
+        connection.value = info
+        passwordVisible.value = false
+        manualCopy.value = text
+        connectionVisible.value = true
+        ElMessage.info('无法自动复制，请在弹窗中手动复制')
+      }
+    })
+  } finally { copyingConnection.value = '' }
+}
 async function copyConnection(value: string) {
   if (!await copyText(value)) {
     manualCopy.value = value
@@ -203,7 +245,7 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
 </script>
 
 <template>
-  <PageHeading title="入口与出口" subtitle="从订阅选择入口，连接出口代理，组合成可复用的链路。">
+  <PageHeading title="链式" subtitle="从订阅选择入口，连接出口代理，组合成可复用的链路。">
     <el-button :icon="Refresh" :loading="busy" @click="action(refresh)">刷新状态</el-button>
     <el-button type="primary" :icon="Plus" :disabled="tab === 'chains' && (!data.entries.length || !data.exits.length)" @click="edit(tab)">添加{{ labels[tab] }}</el-button>
   </PageHeading>
@@ -239,14 +281,16 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
         <div class="chain-status">
           <el-tag :type="row.status.state === 'error' ? 'danger' : row.status.state === 'running' ? 'success' : 'info'">{{ statusLabels[row.status.state] || row.status.state }}</el-tag>
           <span v-if="row.status.latency != null">{{ row.status.latency }} ms</span>
-          <div v-if="row.relay_enabled"><code>{{ relayAddress(row) }}</code></div>
+          <div v-if="row.relay_enabled" class="chain-address"><code>{{ relayAddress(row) }}</code><el-button text type="primary" :icon="CopyDocument" :loading="copyingConnection === row.id" :disabled="busy || !!copyingConnection" @click="copyChainConnection(row)">复制连接信息</el-button></div>
           <div v-if="row.status.current_entry">当前入口：{{ row.status.current_entry }}</div>
           <div v-if="row.status.error" class="danger-text">{{ row.status.error }}</div>
+          <ProbeFeedback :loading="probes['chains:' + row.id]?.loading" :result="probeResult('chains', row)" />
         </div>
         <div class="card-actions">
           <el-button type="primary" plain :disabled="busy" @click="showConnection(row)">连接信息</el-button>
-          <el-button @click="edit('chains', row)">编辑</el-button>
-          <ActionMenu :disabled="busy" :items="chainActions" @select="key => onChainAction(key, row)" />
+          <el-button :loading="probes['chains:' + row.id]?.loading" :disabled="!row.enabled" @click="probe('chains', row.id)">检测链路</el-button>
+          <el-button :disabled="probes['chains:' + row.id]?.loading" @click="edit('chains', row)">编辑</el-button>
+          <ActionMenu :disabled="busy || probes['chains:' + row.id]?.loading" :items="chainActions" @select="key => onChainAction(key, row)" />
         </div>
       </article>
     </div>
@@ -254,24 +298,25 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
       <el-table-column prop="name" label="名称" min-width="160" />
       <el-table-column label="配置" min-width="240">
         <template #default="{ row }">
-          <template v-if="tab === 'entries'">{{ subscriptions.find(s => s.id === row.subscription_id)?.name || '来源不可用' }}<p class="muted">{{ row.mode === 'auto' ? '自动选择入口' : '固定入口节点' }}</p></template>
-          <template v-else><code>{{ row.server }}:{{ row.port }}</code><p class="muted">{{ row.tls ? 'HTTPS' : row.type.toUpperCase() }}</p></template>
+          <template v-if="tab === 'entries'">{{ subscriptions.find(s => s.id === row.subscription_id)?.name || '来源不可用' }}<p class="muted">{{ row.mode === 'auto' ? '全部节点自动选择' : `已选 ${row.node_keys?.length || (row.node_key ? 1 : 0)} 个节点 · 自动择优` }}</p></template>
+          <template v-else><code>{{ row.server }}:{{ row.port }}</code><p class="muted">{{ row.tls ? 'HTTPS' : row.type.toUpperCase() }}</p><ProbeFeedback :loading="probes['exits:' + row.id]?.loading" :result="probeResult('exits', row)" /></template>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-      <el-table-column label="操作" width="160">
-        <template #default="{ row }"><div class="toolbar-actions"><el-button text @click="edit(tab, row)">编辑</el-button><ActionMenu :disabled="busy" :items="[{ key: 'remove', label: '删除配置', danger: true }]" @select="remove(tab, row)" /></div></template>
+      <el-table-column label="操作" :width="tab === 'exits' ? 300 : 220">
+        <template #default="{ row }"><div class="toolbar-actions config-row-actions"><el-button v-if="tab === 'exits'" text type="primary" :loading="probes['exits:' + row.id]?.loading" :disabled="!row.enabled" @click="probe('exits', row.id)">测速</el-button><el-button text :disabled="probes['exits:' + row.id]?.loading" @click="edit(tab, row)">编辑</el-button><ActionMenu :disabled="busy || probes['exits:' + row.id]?.loading" :items="[{ key: 'remove', label: '删除配置', danger: true }]" @select="remove(tab, row)" /></div></template>
       </el-table-column>
     </el-table>
+    <p v-if="tab === 'exits'" class="note">出口测速从本服务器直连出口，检测代理可用性和延迟；需要经入口才能访问的出口，请检测对应链路。</p>
     <p v-if="tab === 'chains'" class="note">完整订阅支持原生两跳，节点订阅使用服务器中转。可在订阅管理中将链路合并到已有订阅。域名需指向本服务器并映射代理端口。</p>
     <el-alert v-if="tab === 'chains' && !settings.mihomo" title="当前未检测到 Mihomo，服务器中转需要安装内核。" type="warning" :closable="false" show-icon class="mt" />
   </section>
 
-  <AppDrawer v-model="dialog" :title="(activeForm.id ? '编辑' : '添加') + labels[editing]" @closed="clearSecrets">
+  <AppDialog v-model="dialog" :title="(activeForm.id ? '编辑' : '添加') + labels[editing]" @closed="clearSecrets">
     <el-form label-position="top" @submit.prevent="save">
       <section class="form-section">
         <h3>基本信息</h3>
-        <el-form-item label="名称"><el-input v-model="activeForm.name" aria-label="配置名称" maxlength="80" /></el-form-item>
+        <el-form-item label="名称"><el-input v-model="activeForm.name" @change="activeForm.name = $event" aria-label="配置名称" maxlength="80" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="activeForm.enabled" /></el-form-item>
       </section>
       <section v-if="editing === 'entries'" class="form-section">
@@ -279,25 +324,32 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
         <el-alert v-if="!eligible.length" title="先创建包含账号或订阅源的订阅，再选择它作为入口。" type="info" :closable="false" class="mb" />
         <router-link v-if="!eligible.length" :to="{ name: 'subscriptions' }" class="text-link mb">前往订阅管理 →</router-link>
         <el-form-item label="入口来源订阅"><el-select v-model="entryForm.subscription_id" filterable class="full" aria-label="入口来源订阅"><el-option v-for="s in eligible" :key="s.id" :value="s.id" :label="s.name" /></el-select></el-form-item>
-        <el-form-item label="选择模式"><el-radio-group v-model="entryForm.mode"><el-radio value="auto">自动选择</el-radio><el-radio value="fixed">固定节点</el-radio></el-radio-group></el-form-item>
-        <el-form-item v-if="entryForm.mode === 'fixed'" label="固定入口节点"><el-select v-model="entryForm.node_key" :loading="nodesLoading" filterable class="full" aria-label="固定入口节点"><el-option v-for="n in nodes" :key="n.key" :value="n.key" :label="n.name + ' · ' + (n.latency == null ? '未测速' : n.latency + ' ms')" /></el-select></el-form-item>
-        <p class="muted">入口使用来源订阅中符合筛选条件的普通节点；自动模式检测经过出口的完整路径。</p>
+        <el-form-item label="选择模式"><el-radio-group v-model="entryForm.mode"><el-radio value="auto">自动选择</el-radio><el-radio value="fixed">固定节点（可多选）</el-radio></el-radio-group></el-form-item>
+        <el-form-item v-if="entryForm.mode === 'fixed'" label="固定入口节点">
+          <div class="full">
+            <el-button :disabled="!entryForm.subscription_id || nodesLoading" @click="nodePickerVisible = true">选择节点</el-button>
+            <p v-if="!entryForm.subscription_id" class="field-hint">请先选择入口来源订阅。</p>
+            <p v-else class="field-hint" style="overflow-wrap: anywhere">已选 {{ entryForm.node_keys.length }} 个节点{{ selectedNodeNames ? '：' + selectedNodeNames : '，点击选择节点进行多选和测速。' }}</p>
+          </div>
+        </el-form-item>
+        <p class="muted">自动选择使用订阅中的全部候选节点；固定节点仅使用勾选的候选。每 5 分钟检测一次经过出口的完整链路，按延迟自动择优，非下载带宽测速。列表中的延迟为节点自身检测结果。</p>
       </section>
       <section v-else-if="editing === 'exits'" class="form-section">
         <h3>出口配置</h3>
         <el-radio-group v-model="inputMode" class="mb" aria-label="出口输入方式"><el-radio-button value="manual">手动填写</el-radio-button><el-radio-button value="yaml">YAML 导入</el-radio-button></el-radio-group>
         <template v-if="inputMode === 'yaml'">
-          <el-form-item label="出口 YAML"><el-input v-model="exitForm.content" type="textarea" :rows="10" placeholder="支持单节点、单节点列表或 proxies 格式" aria-label="出口 YAML" /></el-form-item>
+          <el-form-item label="出口 YAML"><el-input v-model="exitForm.content" @change="exitForm.content = $event" type="textarea" :rows="10" placeholder="支持单节点、单节点列表或 proxies 格式" aria-label="出口 YAML" /></el-form-item>
           <p class="muted">导入一个 HTTP、HTTPS 或 SOCKS5 出口节点。切换填写方式会保留本次草稿，只保存当前方式的配置。</p>
         </template>
         <template v-else>
           <el-form-item label="协议"><el-select v-model="exitForm.type" class="full"><el-option label="HTTP" value="http" /><el-option label="HTTPS" value="https" /><el-option label="SOCKS5" value="socks5" /></el-select></el-form-item>
           <div class="sub-grid">
-            <el-form-item label="服务器域名或 IP"><el-input v-model="exitForm.server" aria-label="出口服务器" /></el-form-item>
+            <!-- Also commit change-only input from IMEs and autofill before the controlled input restores its value. -->
+            <el-form-item label="服务器域名或 IP"><el-input v-model="exitForm.server" @change="exitForm.server = $event" aria-label="出口服务器" autocapitalize="none" :spellcheck="false" /></el-form-item>
             <el-form-item label="端口"><el-input-number v-model="exitForm.port" :min="1" :max="65535" class="full" /></el-form-item>
           </div>
-          <el-form-item label="用户名"><el-input v-model="exitForm.username" autocomplete="off" /></el-form-item>
-          <el-form-item label="密码（编辑时留空保留）"><el-input v-model="exitForm.password" type="password" show-password autocomplete="new-password" /></el-form-item>
+          <el-form-item label="用户名"><el-input v-model="exitForm.username" @change="exitForm.username = $event" autocomplete="off" /></el-form-item>
+          <el-form-item label="密码（编辑时留空保留）"><el-input v-model="exitForm.password" @change="exitForm.password = $event" type="password" show-password autocomplete="new-password" /></el-form-item>
           <el-form-item label="启用 TLS"><el-switch v-model="exitForm.tls" /></el-form-item>
         </template>
       </section>
@@ -311,8 +363,11 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
           <h3>服务器中转</h3>
           <el-form-item label="启用服务器中转"><el-switch v-model="chainForm.relay_enabled" /></el-form-item>
           <template v-if="chainForm.relay_enabled">
-            <el-form-item label="监听端口（留空自动分配）"><el-input-number v-model="chainForm.listen_port" :min="1024" :max="65535" class="full" /></el-form-item>
-            <el-form-item label="对外域名或 IP（留空使用系统域名）"><el-input v-model="chainForm.public_host" /></el-form-item>
+            <el-form-item label="监听端口" :error="portError">
+              <el-input-number v-model="chainForm.listen_port" :min="settings.proxy_port_start" :max="settings.proxy_port_end" :step="1" :controls="false" :placeholder="chainForm.id ? '留空保留当前端口' : '留空自动分配'" aria-label="监听端口" aria-describedby="proxy-port-hint" class="full" />
+              <p id="proxy-port-hint" class="muted">允许范围：{{ settings.proxy_port_start }}–{{ settings.proxy_port_end }}。{{ chainForm.id ? '留空保留当前端口。' : '留空由系统分配未使用的端口。' }}</p>
+            </el-form-item>
+            <el-form-item label="对外域名或 IP（留空使用系统域名）"><el-input v-model="chainForm.public_host" @change="chainForm.public_host = $event" autocapitalize="none" :spellcheck="false" /></el-form-item>
             <p class="muted">保存后在“连接信息”获取域名:端口及认证信息，HTTP 与 SOCKS5 使用同一端口。</p>
           </template>
           <p v-else class="muted">仍可在完整订阅中使用客户端原生链路。直接代理访问和仅节点订阅需要启用服务器中转。</p>
@@ -320,9 +375,11 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
       </template>
     </el-form>
     <template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary" :loading="busy" :disabled="!canSave" @click="save">保存配置</el-button></template>
-  </AppDrawer>
+  </AppDialog>
 
-  <AppDrawer v-model="connectionVisible" title="代理连接信息" :form="false" @closed="clearConnection">
+  <EntryNodeSelectDialog v-model="nodePickerVisible" :subscription-id="entryForm.subscription_id" :selected-keys="entryForm.node_keys" :nodes="nodes" @confirm="entryForm.node_keys = $event" @refreshed="nodes = $event" />
+
+  <AppDialog v-model="connectionVisible" title="代理连接信息" :form="false" @closed="clearConnection">
     <p class="muted">使用中转地址连接代理。复制操作会包含完整认证信息。</p>
     <el-button @click="passwordVisible = !passwordVisible">{{ passwordVisible ? '隐藏认证信息' : '显示认证信息' }}</el-button>
     <div v-for="field in connectionFields" :key="field.label" class="connection-field">
@@ -331,5 +388,12 @@ function clearSecrets() { exitForm.password = ''; exitForm.content = '' }
     </div>
     <div v-if="manualCopy" class="manual-copy"><el-form-item label="手动复制内容"><el-input :model-value="manualCopy" type="textarea" :rows="6" readonly aria-label="手动复制内容" /></el-form-item></div>
     <template #footer><el-button type="primary" @click="copyConnection(connectionFields.map(f => f.label + '：' + f.value).join('\n'))">复制连接信息</el-button></template>
-  </AppDrawer>
+  </AppDialog>
 </template>
+
+<style scoped>
+.config-row-actions { flex-wrap: nowrap; white-space: nowrap; }
+.config-row-actions > * { flex-shrink: 0; }
+.chain-address { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.chain-address code { min-width: 0; overflow-wrap: anywhere; }
+</style>

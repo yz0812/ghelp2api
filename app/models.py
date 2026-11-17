@@ -103,6 +103,7 @@ class ProxyCheck(Base):
     latency: Mapped[float | None] = mapped_column(Float, nullable=True)
     method: Mapped[str] = mapped_column(String(10), default="tcp")
     tested_at: Mapped[float] = mapped_column(Float, default=time.time)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class LoginSession(Base):
@@ -125,6 +126,7 @@ class Entry(Base):
     subscription_id: Mapped[str] = mapped_column(ForeignKey("subscriptions.id"))
     mode: Mapped[str] = mapped_column(String(10), default="auto")
     node_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    node_keys: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

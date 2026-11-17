@@ -5,13 +5,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Download, Link, Plus, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import { api } from '../api'
 import ActionMenu from '../components/ActionMenu.vue'
-import AppDrawer from '../components/AppDrawer.vue'
+import AppDialog from '../components/AppDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FormError from '../components/FormError.vue'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
 import SubscriptionDetailDialog from '../components/SubscriptionDetailDialog.vue'
-import { accounts, action, busy, chains, load, regionText, regions, running, schedulePoll, settings, sources, subscriptions } from '../store'
+import RegionBadge from '../components/RegionBadge.vue'
+import { accounts, action, busy, chains, load, regionText, regionCountries, regions, running, schedulePoll, settings, sources, subscriptions } from '../store'
 import { copyText, downloadYaml, fetchConfig } from '../utils'
 import type { Subscription } from '../types'
 
@@ -169,7 +170,7 @@ const conditionText = (s: Subscription) =>
           <h2>{{ s.name }}</h2>
           <p class="muted">
             {{ s.account_ids.length }} 个账号 · {{ s.source_ids.length }} 个订阅源 · {{ s.chain_ids.length }} 条链路 ·
-            {{ s.regions.length ? s.regions.map(regionText).join(' / ') : '全部入口' }}<template v-if="conditionText(s)"> · {{ conditionText(s) }}</template>
+            <template v-if="s.regions.length"><template v-for="(r, index) in s.regions" :key="r"><span v-if="index"> / </span><RegionBadge :country="regionCountries[r]" :label="regionText(r)" /></template></template><template v-else>全部入口</template><template v-if="conditionText(s)"> · {{ conditionText(s) }}</template>
           </p>
         </div>
         <el-tag :type="s.enabled ? 'success' : 'info'">{{ s.enabled ? '已启用' : '已停用' }}</el-tag>
@@ -203,7 +204,7 @@ const conditionText = (s: Subscription) =>
 
   <div class="note">在 Clash 中新建远程订阅并粘贴地址，建议客户端每 30–60 分钟更新。订阅地址具有访问权限，请妥善保存。</div>
 
-  <AppDrawer v-model="visible" :title="form.id ? '编辑订阅' : '创建订阅'" size="680px">
+  <AppDialog v-model="visible" :title="form.id ? '编辑订阅' : '创建订阅'" size="680px">
     <el-form label-position="top" class="sub-form" @submit.prevent="save">
       <section class="form-section"><h3>基本信息</h3>
       <div class="sub-grid">
@@ -235,25 +236,25 @@ const conditionText = (s: Subscription) =>
       <el-collapse v-model="advanced"><el-collapse-item name="filters" title="高级节点筛选">
       <el-form-item label="入口筛选（留空包含全部）">
         <el-select v-model="form.regions" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="6" class="full">
-          <el-option v-for="r in regions" :key="r" :value="r" :label="regionText(r)" />
+          <el-option v-for="r in regions" :key="r" :value="r" :label="regionText(r)"><RegionBadge :country="regionCountries[r]" :label="regionText(r)" /></el-option>
         </el-select>
       </el-form-item>
       <div class="sub-grid">
         <el-form-item>
           <template #label>
-            <span class="help-label">去除不可用节点<el-tooltip content="生成时现场探测：用 mihomo 内核按节点自身配置真实访问 204 检测地址，超时或连接失败的节点不写入订阅。" placement="top" :show-after="200"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
+            <span class="help-label">去除不可用节点<el-tooltip content="生成时现场探测：用 mihomo 内核按节点自身配置真实访问 204 检测地址，超时或连接失败的节点不写入订阅。" placement="top" :show-after="200" popper-class="help-tip"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
           </template>
           <el-switch v-model="form.exclude_failed" />
         </el-form-item>
         <el-form-item>
           <template #label>
-            <span class="help-label">去除重复节点<el-tooltip content="按协议、服务器、端口与凭据合并，保留先出现的那个。" placement="top" :show-after="200"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
+            <span class="help-label">去除重复节点<el-tooltip content="按协议、服务器、端口与凭据合并，保留先出现的那个。" placement="top" :show-after="200" popper-class="help-tip"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
           </template>
           <el-switch v-model="form.dedupe" />
         </el-form-item>
         <el-form-item>
           <template #label>
-            <span class="help-label">最大延迟（毫秒）<el-tooltip content="留空不限制。开启后会定时测速，延迟超过上限的节点不写入订阅；未测出延迟的节点保留。" placement="top" :show-after="200"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
+            <span class="help-label">最大延迟（毫秒）<el-tooltip content="留空不限制。开启后会定时测速，延迟超过上限的节点不写入订阅；未测出延迟的节点保留。" placement="top" :show-after="200" popper-class="help-tip"><el-icon><QuestionFilled /></el-icon></el-tooltip></span>
           </template>
           <el-input-number v-model="form.max_latency" :min="1" :max="10000" :step="50" placeholder="不限制" class="full" />
         </el-form-item>
@@ -270,9 +271,9 @@ const conditionText = (s: Subscription) =>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="busy" :disabled="(!form.account_ids.length && !form.source_ids.length && !form.chain_ids.length) || !form.name.trim()" @click="save">保存订阅</el-button>
     </template>
-  </AppDrawer>
+  </AppDialog>
 
-  <el-dialog v-model="previewVisible" title="配置预览" width="850px" @closed="preview = ''">
+  <el-dialog append-to-body align-center v-model="previewVisible" title="配置预览" width="850px" @closed="preview = ''">
     <FormError />
     <pre class="config-preview">{{ preview }}</pre>
     <template #footer>
