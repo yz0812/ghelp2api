@@ -13,6 +13,7 @@ const nav = [
   { name: 'accounts', label: '账号管理', icon: Key },
   { name: 'nodes', label: '节点列表', icon: Connection },
   { name: 'sources', label: '订阅源', icon: Files },
+  { name: 'chains', label: '入口与出口', icon: Connection },
   { name: 'subscriptions', label: '订阅管理', icon: Link },
   { name: 'jobs', label: '任务记录', icon: Tickets },
   { name: 'settings', label: '系统设置', icon: Setting }

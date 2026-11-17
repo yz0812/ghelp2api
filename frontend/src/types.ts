@@ -10,6 +10,7 @@ export interface Node {
   latency: number | null; reachable: boolean | null; tested_at: number | null; enabled: boolean; stale: boolean;
 }
 export interface Subscription {
+  chain_ids: string[]; chain_mode: "native" | "relay";
   id: string; name: string; account_ids: string[]; source_ids: string[]; regions: string[];
   exclude_failed: boolean; dedupe: boolean; max_latency: number | null;
   max_per_country: number | null; last_probe: number | null;
@@ -32,3 +33,5 @@ export interface Preferences {
   refresh_minutes: number; probe_minutes: number; probe_timeout_ms: number;
   mihomo: boolean; public_base_url: string; extension_version: string; version: string;
 }
+
+export interface Chain { id: string; name: string; entry_id: string; exit_id: string; enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; status: { state: string; error?: string; current_entry?: string; latency?: number } }

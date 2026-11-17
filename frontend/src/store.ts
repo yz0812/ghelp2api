@@ -1,7 +1,7 @@
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, setCsrf } from './api'
-import type { Account, Job, Node, Preferences, Source, Subscription } from './types'
+import type { Account, Chain, Job, Node, Preferences, Source, Subscription } from './types'
 
 export { jobKind, stateLabel } from './utils'
 
@@ -16,6 +16,7 @@ export const accounts = ref<Account[]>([])
 export const nodes = ref<Node[]>([])
 export const sources = ref<Source[]>([])
 export const subscriptions = ref<Subscription[]>([])
+export const chains = ref<Chain[]>([])
 export const jobs = ref<Job[]>([])
 export const settings = reactive<Preferences>({
   refresh_minutes: 30, probe_minutes: 30, probe_timeout_ms: 5000,
@@ -55,13 +56,14 @@ export async function action(fn: () => Promise<void>) {
 export async function load() {
   loading.value = true
   try {
-    const [a, n, src, s, j, config] = await Promise.all([
-      api('/accounts'), api('/nodes'), api('/sources'), api('/subscriptions'), api('/jobs'), api('/settings')
+    const [a, n, src, s, j, config, ch] = await Promise.all([
+      api('/accounts'), api('/nodes'), api('/sources'), api('/subscriptions'), api('/jobs'), api('/settings'), api('/chains')
     ])
     accounts.value = a
     nodes.value = n
     sources.value = src
     subscriptions.value = s
+    chains.value = ch
     jobs.value = j
     Object.assign(settings, config)
   } finally {
@@ -87,6 +89,7 @@ export function expire() {
   nodes.value = []
   sources.value = []
   subscriptions.value = []
+  chains.value = []
   jobs.value = []
 }
 

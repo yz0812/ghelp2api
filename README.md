@@ -16,13 +16,39 @@
 
 ## 部署
 
+### 入口、出口与链路
+
+在“入口与出口”页面先创建入口（选择已有订阅，自动选择或固定节点），再添加出口，最后组合成链路。
+出口支持 HTTP、HTTPS、SOCKS5，可通过表单或粘贴一个 YAML 节点导入；密码加密保存，编辑时留空保留原密码。
+入口仅使用来源订阅中符合筛选条件的普通节点；固定节点失效后需要重新选择。
+
+链路可以单独生成订阅，也能在“订阅管理”中合入已有订阅。完整配置默认使用客户端执行的原生两跳链路，
+也可选择服务器中转；仅节点地址 `proxies.yaml` 中的链路始终使用带认证的服务器中转节点。
+中转关闭或不可用的链路不会进入仅节点导出；所有输出均不可用时返回 503。
+自动模式每 300 秒检测完整两跳路径；页面“检测”可立即检测并在任务记录查看结果。
+
+“连接信息”提供代理域名、端口和独立账号密码，同一端口支持 HTTP 与 SOCKS5，首版转发 TCP 流量。
+对外域名默认使用 `PUBLIC_BASE_URL` 的主机名，也可以在链路中指定。
+域名必须解析到部署服务器，代理端口需直接转发到容器；网站的 HTTP 反向代理不会自动转发这些端口。
+默认分配范围为 `20000–20099`，用 `PROXY_PORT_START` / `PROXY_PORT_END` 调整，并同步修改端口映射：
+
+```sh
+# 在下方 docker run 命令中增加以下端口参数：
+-p 20000-20099:20000-20099/tcp
+```
+
+本地部署需要可用的 Mihomo，可通过 `MIHOMO_BIN` 指定；Docker 镜像已内置。
+服务启动时恢复监听，配置修改时重建代理进程，已有连接可能短暂中断。
+停用、删除或轮换认证立即应用；进程启动失败时关闭监听并显示错误，后台退避重试。
+出口信息和代理认证与现有数据一样依赖 `ENCRYPTION_KEY`，升级时需保留原密钥与数据卷。
+
 镜像发布在 `ghcr.io/yz0812/ghelp2api:latest`，同时提供 `amd64` 和 `arm64`。
 
 ```sh
 docker run -d --name ghelper -p 127.0.0.1:8000:8000 \
   -v ghelper-data:/data \
   -e ADMIN_USERNAME=admin \
-  -e ADMIN_PASSWORD='至少9位密码' \
+  -e ADMIN_PASSWORD='至少5位密码' \
   -e ADMIN_API_KEY='至少32位随机串' \
   -e ENCRYPTION_KEY="$(python -c 'import base64,secrets;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')" \
   -e PUBLIC_BASE_URL=https://你的域名 \
@@ -51,7 +77,7 @@ npm --prefix frontend ci && npm --prefix frontend run build
 | 变量 | 说明 |
 |---|---|
 | `ADMIN_USERNAME` | 管理员账号，默认 `admin` |
-| `ADMIN_PASSWORD` | 至少 9 位 |
+| `ADMIN_PASSWORD` | 至少 5 位 |
 | `ADMIN_API_KEY` | 至少 32 位，程序调用管理接口用 |
 | `ENCRYPTION_KEY` | Fernet 密钥，必须和数据库一起备份，**不能随意更换** |
 | `PUBLIC_BASE_URL` | 对外访问地址，用来拼接订阅链接，不能保留 localhost |

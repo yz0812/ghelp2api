@@ -38,5 +38,6 @@ COPY VERSION ./
 COPY --from=frontend /build/dist frontend/dist/
 USER ghelper
 EXPOSE 8000
+EXPOSE 20000-20099/tcp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD curl -fsS http://127.0.0.1:8000/readyz || exit 1
 CMD ["python", "-m", "uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

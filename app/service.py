@@ -62,6 +62,8 @@ def source_due(source, now) -> bool:
 class Service:
     def __init__(self, settings, db, secrets):
         self.settings, self.db, self.secrets = settings, db, secrets
+        from app.chains import ChainManager
+        self.chains = ChainManager(self)
         self.gateway = Gateway(settings)
         self.fetcher = Fetcher()
         self.locks: dict[str, asyncio.Lock] = {}
@@ -94,6 +96,7 @@ class Service:
         return base
 
     async def start(self):
+        await self.chains.start()
         with self.db.begin() as db:
             db.execute(update(Job).where(Job.status.in_(["pending", "running"]))
                        .values(status="interrupted", errors=["服务重启，任务已中断"]))
@@ -107,6 +110,7 @@ class Service:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await self.chains.stop()
         await self.gateway.close()
         await self.fetcher.close()
 
@@ -372,7 +376,13 @@ class Service:
                            "reachable": row["reachable"], "latency": row["latency"],
                            "tested_at": row["tested_at"], "method": row.get("method"),
                            "included": reason is None, "reason": reason})
-        return result
+        chain_rows = self.chains.details(sub.chain_ids)
+        for row in chain_rows:
+            if row["included"] and exclude_failed and row["reachable"] is False:
+                row.update(included=False, reason="链路检测失败")
+            if row["included"] and max_latency and row["latency"] is not None and row["latency"] > max_latency:
+                row.update(included=False, reason="链路延迟超过上限")
+        return result + chain_rows
 
     async def refresh_subscription(self, sub_id):
         """强制重新拉取订阅的账号与订阅源（不看缓存期），再对全部节点重新测速。
@@ -394,6 +404,8 @@ class Service:
                                  *(source(i) for i in sources), return_exceptions=True)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(waiting, SOURCE_FETCH_TIMEOUT + 15)
+        await self.chains.refresh(sub.chain_ids, force=True)
+        await self.chains.sync()
         return self.schedule_test(sub_id)
 
     def schedule_test(self, sub_id, keys=None):
@@ -410,8 +422,13 @@ class Service:
             if (keys is None or key in keys) and key not in targets:
                 row["key"] = key
                 targets[key] = row
+        chain_ids = [i for i in (sub.chain_ids if sub else [])
+                     if keys is None or any(r["key"] in keys for r in self.chains.details([i]))]
+        for chain_id in chain_ids:
+            job_id = self.new_job("chain_probe", 1)
+            self.spawn(self.chains.probe(chain_id, job_id))
         if not targets:
-            return None, 0
+            return (job_id, len(chain_ids)) if chain_ids else (None, 0)
         job_id = self.new_job("sub_probe", len(targets))
         self.sub_tests[sub_id] = job_id
         self.spawn(self.test_job(job_id, sub_id, list(targets.values())))
@@ -516,6 +533,7 @@ class Service:
                     return
                 accounts, sources = list(sub.account_ids), list(sub.source_ids)
                 regions = list(sub.regions)
+                chain_ids = list(sub.chain_ids)
             deadline = time.time() + SCHEDULED_COVER_BUDGET
             now = time.time()
             await self._refresh_due(accounts, sources, now)
@@ -526,6 +544,11 @@ class Service:
                     break
                 if not await self._probe_stale(rows, time.time(), budget=budget):
                     break  # 没有节点需要测：缓存已覆盖全量
+            for chain_id in chain_ids:
+                if time.time() >= deadline:
+                    break
+                chain_job = self.new_job("chain_probe", 1)
+                await self.chains.probe(chain_id, chain_job)
             with self.db.begin() as db:
                 row = db.get(Subscription, sub_id)
                 if row:

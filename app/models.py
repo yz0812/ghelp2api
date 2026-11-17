@@ -56,6 +56,8 @@ class Subscription(Base):
     key_cipher: Mapped[str] = mapped_column(Text)
     account_ids: Mapped[list] = mapped_column(JSON)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)
+    chain_ids: Mapped[list] = mapped_column(JSON, default=list)
+    chain_mode: Mapped[str] = mapped_column(String(10), default="native")
     regions: Mapped[list] = mapped_column(JSON, default=list)
     exclude_failed: Mapped[bool] = mapped_column(Boolean, default=False)
     dedupe: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -114,3 +116,35 @@ class Preference(Base):
     __tablename__ = "preferences"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[dict] = mapped_column(JSON)
+
+
+class Entry(Base):
+    __tablename__ = "entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    subscription_id: Mapped[str] = mapped_column(ForeignKey("subscriptions.id"))
+    mode: Mapped[str] = mapped_column(String(10), default="auto")
+    node_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Exit(Base):
+    __tablename__ = "exits"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    config_cipher: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Chain(Base):
+    __tablename__ = "chains"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    entry_id: Mapped[str] = mapped_column(ForeignKey("entries.id"))
+    exit_id: Mapped[str] = mapped_column(ForeignKey("exits.id"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    relay_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    listen_port: Mapped[int] = mapped_column(Integer, unique=True)
+    public_host: Mapped[str] = mapped_column(String(253), default="")
+    username: Mapped[str] = mapped_column(String(80))
+    password_cipher: Mapped[str] = mapped_column(Text)

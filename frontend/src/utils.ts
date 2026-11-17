@@ -7,7 +7,7 @@ export const stateLabel: Record<string, string> = {
 }
 
 export const jobKind: Record<string, string> = {
-  refresh: '账号刷新', probe: '节点测速', sub_probe: '订阅测速', source: '订阅源检测'
+  chain_probe: '链路检测', refresh: '账号刷新', probe: '节点测速', sub_probe: '订阅测速', source: '订阅源检测'
 }
 
 export function time(value: number | null) {

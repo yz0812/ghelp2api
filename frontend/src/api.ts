@@ -9,7 +9,7 @@ export async function api(path: string, method = 'GET', body?: unknown): Promise
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    if (res.status === 401 && path !== '/auth/login') window.dispatchEvent(new Event('session-expired'))
+    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') window.dispatchEvent(new Event('session-expired'))
     const detail = Array.isArray(data.detail) ? data.detail.map((x: any) => `${x.loc?.slice(1).join('.')}: ${x.msg}`).join('；') : data.detail
     throw new Error(detail || `请求失败 (${res.status})`)
   }

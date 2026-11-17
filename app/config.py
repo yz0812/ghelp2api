@@ -21,7 +21,7 @@ APP_VERSION = read_version()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     admin_username: str = "admin"
-    admin_password: str = Field(min_length=9)
+    admin_password: str = Field(min_length=5)
     admin_api_key: str = Field(min_length=32)
     encryption_key: str
     data_dir: Path = Path("data")
@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     api_hosts: str = "gheapi.com,apihuawei.com,plebvps.com,apikuaishou.com"
     extension_version: str = "2.9.3"
     scheduler_enabled: bool = True
+    proxy_port_start: int = Field(default=20000, ge=1024, le=65535)
+    proxy_port_end: int = Field(default=20099, ge=1024, le=65535)
 
     @field_validator("encryption_key")
     @classmethod

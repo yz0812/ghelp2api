@@ -1,13 +1,14 @@
 import yaml
 
 
-def render(proxies: list[dict], groups: dict[str, list[str]], *, full: bool = True) -> str:
+def render(proxies: list[dict], groups: dict[str, list[str]], *, full: bool = True,
+           chain_groups=None, targets=None) -> str:
     """按已合并、去重、命名好的节点与分组生成 Clash 配置。"""
     if not proxies:
         raise ValueError("没有可导出的节点")
     config = {"proxies": proxies}
     if full:
-        names = [p["name"] for p in proxies]
+        names = targets if targets is not None else [p["name"] for p in proxies]
         auto = {"type": "url-test", "url": "https://www.gstatic.com/generate_204",
                 "interval": 300, "tolerance": 100}
         config = {"mixed-port": 7891, "allow-lan": False, "mode": "rule", "log-level": "info",
@@ -16,10 +17,10 @@ def render(proxies: list[dict], groups: dict[str, list[str]], *, full: bool = Tr
                           "fake-ip-range": "198.18.0.1/16", "fake-ip-filter": ["*.lan", "*.local"],
                           "nameserver": ["223.5.5.5", "119.29.29.29"]}, **config,
                   "proxy-groups": [{"name": "节点选择", "type": "select",
-                                    "proxies": ["自动选择", *groups, "DIRECT"]},
+                                    "proxies": ["自动选择", *groups, *[g["name"] for g in chain_groups or []], "DIRECT"]},
                                    {"name": "自动选择", **auto, "proxies": names},
                                    *[{"name": k, **auto, "proxies": list(dict.fromkeys(v))}
-                                     for k, v in groups.items()]],
+                                     for k, v in groups.items()], *(chain_groups or [])],
                   "rules": ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
                             "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
                             "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",

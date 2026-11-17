@@ -7,7 +7,7 @@ import { api } from '../api'
 import PageHeading from '../components/PageHeading.vue'
 import RunningBanner from '../components/RunningBanner.vue'
 import SubscriptionDetailDialog from '../components/SubscriptionDetailDialog.vue'
-import { accounts, action, busy, load, regionText, regions, running, schedulePoll, settings, sources, subscriptions } from '../store'
+import { accounts, action, busy, chains, load, regionText, regions, running, schedulePoll, settings, sources, subscriptions } from '../store'
 import { copyText, downloadYaml, fetchConfig } from '../utils'
 import type { Subscription } from '../types'
 
@@ -24,6 +24,8 @@ const form = reactive({
   name: '',
   account_ids: [] as string[],
   source_ids: [] as string[],
+  chain_ids: [] as string[],
+  chain_mode: "native" as "native" | "relay",
   regions: [] as string[],
   exclude_failed: false,
   dedupe: true,
@@ -38,6 +40,8 @@ function resetForm(accountId?: string) {
     name: accountId ? `${accounts.value.find(a => a.id === accountId)?.name || '账号'} 订阅` : '我的统一订阅',
     account_ids: accountId ? [accountId] : accounts.value.filter(a => a.enabled).map(a => a.id),
     source_ids: [],
+    chain_ids: [],
+    chain_mode: "native",
     regions: [],
     exclude_failed: false,
     dedupe: true,
@@ -53,7 +57,7 @@ function create(accountId?: string) {
 }
 
 function edit(s: Subscription) {
-  Object.assign(form, { ...s, account_ids: [...s.account_ids], source_ids: [...s.source_ids], regions: [...s.regions] })
+  Object.assign(form, { ...s, chain_ids: [...s.chain_ids], account_ids: [...s.account_ids], source_ids: [...s.source_ids], regions: [...s.regions] })
   visible.value = true
 }
 
@@ -66,9 +70,9 @@ watch([() => route.query.account, accounts], ([accountId]) => {
 
 async function save() {
   await action(async () => {
-    const { id, name, account_ids, source_ids, regions: regionList, exclude_failed, dedupe, max_latency, max_per_country, enabled } = form
+    const { id, name, account_ids, source_ids, chain_ids, chain_mode, regions: regionList, exclude_failed, dedupe, max_latency, max_per_country, enabled } = form
     await api(id ? `/subscriptions/${id}` : '/subscriptions', id ? 'PUT' : 'POST', {
-      name, account_ids, source_ids, regions: regionList, exclude_failed, dedupe,
+      name, account_ids, source_ids, chain_ids, chain_mode, regions: regionList, exclude_failed, dedupe,
       max_latency: max_latency || null, max_per_country: max_per_country || null, enabled
     })
     visible.value = false
@@ -141,12 +145,12 @@ const conditionText = (s: Subscription) =>
 
 <template>
   <PageHeading title="订阅管理" subtitle="组合账号与订阅源，生成可自动更新的统一订阅。">
-    <el-button type="primary" :icon="Plus" :disabled="!accounts.length && !sources.length" @click="create()">创建订阅</el-button>
+    <el-button type="primary" :icon="Plus" :disabled="!accounts.length && !sources.length && !chains.length" @click="create()">创建订阅</el-button>
   </PageHeading>
   <RunningBanner :running="running.length > 0" />
 
   <el-empty v-if="!subscriptions.length" description="创建第一个订阅，将节点交给 Clash 自动管理">
-    <el-button type="primary" :disabled="!accounts.length && !sources.length" @click="create()">创建订阅</el-button>
+    <el-button type="primary" :disabled="!accounts.length && !sources.length && !chains.length" @click="create()">创建订阅</el-button>
   </el-empty>
 
   <div class="subscription-grid">
@@ -198,10 +202,19 @@ const conditionText = (s: Subscription) =>
           <el-option v-for="a in accounts" :key="a.id" :value="a.id" :label="`${a.name}${a.enabled ? '' : '（已停用）'}`" />
         </el-select>
       </el-form-item>
-      <el-form-item label="订阅源（与账号至少选一个）">
+      <el-form-item label="订阅源">
         <el-select v-model="form.source_ids" multiple collapse-tags collapse-tags-tooltip :max-collapse-tags="4" placeholder="选择一个或多个外部订阅" class="full">
           <el-option v-for="s in sources" :key="s.id" :value="s.id" :label="`${s.name}${s.enabled ? '' : '（已停用）'}`" />
         </el-select>
+      </el-form-item>
+      <el-form-item label="代理链路">
+        <el-select v-model="form.chain_ids" multiple class="full" placeholder="选择入口 → 出口链路">
+          <el-option v-for="c in chains" :key="c.id" :value="c.id" :label="c.name" />
+        </el-select>
+      </el-form-item>
+      <el-form-item v-if="form.chain_ids.length" label="完整配置中的链路方式">
+        <el-select v-model="form.chain_mode"><el-option label="原生链路（客户端执行）" value="native" /><el-option label="服务器中转" value="relay" /></el-select>
+        <p class="muted">仅节点订阅中的链路始终使用服务器中转，需要启用中转端口。</p>
       </el-form-item>
       <el-form-item label="入口筛选（留空包含全部）">
         <el-select v-model="form.regions" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="6" class="full">
@@ -237,7 +250,7 @@ const conditionText = (s: Subscription) =>
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="busy" :disabled="(!form.account_ids.length && !form.source_ids.length) || !form.name.trim()" @click="save">保存订阅</el-button>
+      <el-button type="primary" :loading="busy" :disabled="(!form.account_ids.length && !form.source_ids.length && !form.chain_ids.length) || !form.name.trim()" @click="save">保存订阅</el-button>
     </template>
   </el-dialog>
 

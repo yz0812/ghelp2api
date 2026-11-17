@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.subscription import MAX_CHARS
@@ -30,6 +31,8 @@ class SubscriptionInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     account_ids: list[str] = Field(default_factory=list, max_length=100)
     source_ids: list[str] = Field(default_factory=list, max_length=100)
+    chain_ids: list[str] = Field(default_factory=list, max_length=100)
+    chain_mode: Literal["native", "relay"] = "native"
     regions: list[str] = Field(default_factory=list, max_length=100)
     exclude_failed: bool = False
     dedupe: bool = True
@@ -39,8 +42,8 @@ class SubscriptionInput(BaseModel):
 
     @model_validator(mode="after")
     def has_origin(self):
-        if not self.account_ids and not self.source_ids:
-            raise ValueError("至少选择一个账号或订阅源")
+        if not self.account_ids and not self.source_ids and not self.chain_ids:
+            raise ValueError("至少选择一个账号、订阅源或链路")
         return self
 
 
