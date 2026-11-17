@@ -10,4 +10,5 @@
 !frontend/tsconfig.json
 !frontend/vite.config.ts
 !frontend/src/**
+!frontend/public/**
 !Dockerfile

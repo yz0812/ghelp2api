@@ -276,7 +276,7 @@ def create_app(settings: Settings | None = None):
         return {"job_id": job_id}
 
     def job_view(job):
-        return {k: getattr(job, k) for k in ("id", "kind", "status", "total", "completed", "errors", "created_at")}
+        return {k: getattr(job, k) for k in ("id", "kind", "status", "total", "completed", "errors", "created_at", "result")}
 
     @app.get("/api/v1/jobs", dependencies=secured)
     async def jobs():
@@ -366,6 +366,8 @@ def create_app(settings: Settings | None = None):
             if not sub:
                 raise HTTPException(404, "订阅不存在")
             refs = list(db.scalars(select(Entry.name).where(Entry.subscription_id == sub_id)))
+            from app.chain_graph import referenced
+            refs.extend(c.name for c in db.scalars(select(Chain)) if referenced(c, "subscriptions", sub_id))
             if refs:
                 raise HTTPException(409, "请先解除入口关联：" + "、".join(refs))
             db.delete(sub)

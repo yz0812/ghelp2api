@@ -1,5 +1,6 @@
 """Isolated demonstration server for browser tests; never contacts GHelper."""
 import tempfile
+import os
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -8,6 +9,7 @@ from app.config import Settings
 from app.main import create_app
 from tests.fixtures import FakeGateway
 
+os.environ["MIHOMO_BIN"] = "off"
 directory = tempfile.TemporaryDirectory(prefix="ghelper-e2e-")
 settings = Settings(_env_file=None, admin_username="admin", admin_password="test-password-12345",
                     admin_api_key="e2e-synthetic-api-key-00000000000000000000",

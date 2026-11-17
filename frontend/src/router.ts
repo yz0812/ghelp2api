@@ -2,6 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { boot, loggedIn } from './store'
 
 const routes = [
+  { path: '/chains/new', name: 'chain-new', component: () => import('./views/ChainEditorView.vue'), meta: { label: '新建链路', nav: 'chains' } },
+  { path: '/chains/:id/edit', name: 'chain-edit', component: () => import('./views/ChainEditorView.vue'), meta: { label: '编辑链路', nav: 'chains' } },
   { path: '/chains', name: 'chains', component: () => import('./views/ChainsView.vue'), meta: { label: '链式' } },
   { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue'), meta: { label: '连接总览' } },
   { path: '/accounts', name: 'accounts', component: () => import('./views/AccountsView.vue'), meta: { label: '账号管理' } },

@@ -97,10 +97,10 @@ class Service:
         return base
 
     async def start(self):
-        await self.chains.start()
         with self.db.begin() as db:
             db.execute(update(Job).where(Job.status.in_(["pending", "running"]))
                        .values(status="interrupted", errors=["服务重启，任务已中断"]))
+        await self.chains.start()
         if self.settings.scheduler_enabled:
             self.scheduler = asyncio.create_task(self.tick())
 

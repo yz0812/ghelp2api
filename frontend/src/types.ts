@@ -28,6 +28,7 @@ export interface SubNode {
 }
 export interface Job {
   id: string; kind: string; status: string; total: number; completed: number; errors: string[]; created_at: number;
+  result?: { steps?: { label: string; state: string; latency?: number; error?: string }[]; path?: { hops: { name: string }[] }; exit_ip?: string; latency?: number; reachable?: boolean | null; tested_at?: number } | null;
 }
 export interface Preferences {
   proxy_public_host: string;
@@ -40,8 +41,18 @@ export interface Chain {
   id: string; name: string; entry_id: string; exit_id: string;
   entry_mode: 'auto' | 'fixed'; entry_node_key: string | null; selected_entry?: string | null;
   enabled: boolean; relay_enabled: boolean; listen_port: number; public_host: string; probe?: ProbeResult | null;
-  status: { state: string; error?: string; current_entry?: string | null; current_entry_key?: string | null; latency?: number | null };
+  status: { state: string; error?: string; current_entry?: string | null; current_entry_key?: string | null; latency?: number | null; current_path?: { path_name: string; path_index: number; hops: { name: string }[] } };
+  paths?: ChainPath[]; revision?: number; lock_exit?: boolean; interval?: number; monitor_enabled?: boolean;
+  configured_paths?: { name: string; strategy: string; hops: { name: string; source: string; candidates: number; type: string }[] }[];
+  configuration_error?: string | null;
 }
+
+export interface ChainHop { source: 'entry' | 'subscription' | 'proxy'; ref: string; node_key: string | null }
+export interface ChainPath {
+  name: string; hops: ChainHop[]; strategy: 'auto' | 'fixed' | 'stable' | 'fallback';
+  tolerance_ms: number; ordered_keys: string[];
+}
+export interface ChainTemplate { id: string; name: string; config: Record<string, any>; error?: string | null }
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export interface ProbeResult {

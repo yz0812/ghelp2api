@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.models import Chain, Entry, Exit, Subscription
 from app.subscription import sanitize, _valid_server
+from app.chain_graph import PathInput, effective_paths, legacy_compatible, preview, referenced
 
 
 class EntryInput(BaseModel):
@@ -54,17 +55,30 @@ class ExitInput(BaseModel):
 class ChainInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=80)
-    entry_id: str
-    exit_id: str
+    entry_id: str | None = None
+    exit_id: str | None = None
     entry_mode: Literal["auto", "fixed"] = "auto"
     entry_node_key: str | None = Field(default=None, min_length=1, max_length=64)
     enabled: bool = True
     relay_enabled: bool = True
     listen_port: int | None = Field(default=None, ge=1024, le=65535)
     public_host: str = ""
+    paths: list[PathInput] | None = Field(default=None, min_length=1, max_length=3)
+    revision: int | None = Field(default=None, ge=1)
+    lock_exit: bool = True
+    interval: int = Field(default=300, ge=60, le=3600)
+    monitor_enabled: bool | None = None
 
     @model_validator(mode="after")
     def selected_entry(self):
+        if self.paths is not None:
+            if self.lock_exit:
+                exits = {(p.hops[-1].source, p.hops[-1].ref, p.hops[-1].node_key) for p in self.paths}
+                if len(exits) != 1:
+                    raise ValueError("已锁定出口，所有主备路径必须使用同一出口节点")
+            return self
+        if not self.entry_id or not self.exit_id:
+            raise ValueError("请选择入口和出口，或提供有序路径")
         if self.entry_mode == "fixed" and not self.entry_node_key:
             raise ValueError("指定入口模式需要选择一个入口节点")
         if self.entry_mode == "auto":
@@ -86,11 +100,19 @@ def install(app, service, secured):
             return dict(config, id=row.id, name=row.name, enabled=row.enabled, has_password=bool(password),
                         probe=manager.cached_result(row))
         with service.db() as db:
-            entry = db.get(Entry, row.entry_id)
+            entry = db.get(Entry, row.entry_id) if row.entry_id else None
         selected_entry = next((r["proxy"]["name"] for key, r in manager.candidates(entry, check_enabled=False)
                                if key == row.entry_node_key), None) if entry and row.entry_node_key else None
+        try:
+            configured_paths, configuration_error = preview(manager, effective_paths(row)), None
+        except ValueError as exc:
+            configured_paths, configuration_error = [], str(exc)
         return {k: getattr(row, k) for k in ("id", "name", "entry_id", "exit_id", "entry_mode", "entry_node_key", "enabled", "relay_enabled",
+                                            "revision", "lock_exit", "interval", "monitor_enabled",
                                             "listen_port", "public_host")} | {"status": manager.status.get(row.id, {"state": "pending"}),
+                                                                           "paths": effective_paths(row),
+                                                                           "configured_paths": configured_paths,
+                                                                           "configuration_error": configuration_error,
                                                                            "selected_entry": selected_entry,
                                                                            "probe": manager.cached_result(row)}
 
@@ -143,6 +165,15 @@ def install(app, service, secured):
             return [view(row) for row in db.scalars(select(models[kind]))]
 
     async def save(kind, payload, id=None):
+        # Core validation awaits a subprocess: never hold SQLite's write transaction
+        # across that await, or monitoring/concurrent edits can block the event loop.
+        if kind == "chains" and payload.paths is not None:
+            candidate = Chain(id=id or "validation", name=payload.name, enabled=True,
+                              paths=[p.model_dump() for p in payload.paths], interval=payload.interval)
+            try:
+                await manager.validate_core(candidate)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
         with service.db.begin() as db:
             model = models[kind]
             row = get(db, model, id) if id else model()
@@ -183,12 +214,36 @@ def install(app, service, secured):
                 row.name, row.enabled = payload.name, payload.enabled
                 row.config_cipher = service.secrets.encrypt(json.dumps(config))
             else:
-                entry = get(db, Entry, payload.entry_id)
-                get(db, Exit, payload.exit_id)
-                if payload.entry_mode == "fixed":
-                    available = {key for key, _ in manager.candidates(entry, check_enabled=False)}
-                    if payload.entry_node_key not in available:
-                        raise HTTPException(422, "指定入口节点不在当前候选中或已失效，请重新选择")
+                if id and payload.revision is not None and payload.revision != row.revision:
+                    raise HTTPException(409, "配置已被修改，请刷新后重新编辑")
+                if payload.paths is not None:
+                    if id and payload.revision is None:
+                        raise HTTPException(409, "编辑有序路径需要携带配置版本，请刷新后重试")
+                    paths = [p.model_dump() for p in payload.paths]
+                    try:
+                        preview(manager, paths)
+                    except ValueError as exc:
+                        raise HTTPException(422, str(exc)) from None
+                    row.paths = paths
+                    first, last = paths[0]["hops"][0], paths[0]["hops"][-1]
+                    row.entry_id = first["ref"] if first["source"] == "entry" else None
+                    row.exit_id = last["ref"] if last["source"] == "proxy" else None
+                    row.entry_mode = "fixed" if paths[0]["strategy"] == "fixed" else "auto"
+                    row.entry_node_key = first.get("node_key") if first["source"] == "entry" else None
+                    row.lock_exit, row.interval = payload.lock_exit, payload.interval
+                    row.monitor_enabled = payload.monitor_enabled if payload.monitor_enabled is not None else True
+                else:
+                    if id and not legacy_compatible(row):
+                        raise HTTPException(409, "该链路包含高级路径，请使用新版编辑器")
+                    entry = get(db, Entry, payload.entry_id)
+                    get(db, Exit, payload.exit_id)
+                    if payload.entry_mode == "fixed":
+                        available = {key for key, _ in manager.candidates(entry, check_enabled=False)}
+                        if payload.entry_node_key not in available:
+                            raise HTTPException(422, "指定入口节点不在当前候选中或已失效，请重新选择")
+                    row.paths = []
+                    row.entry_id, row.exit_id = payload.entry_id, payload.exit_id
+                    row.entry_mode, row.entry_node_key = payload.entry_mode, payload.entry_node_key
                 if payload.public_host and not _valid_server(payload.public_host):
                     raise HTTPException(422, "对外域名格式无效，请只填写域名或 IP")
                 occupied = set(db.scalars(select(Chain.listen_port).where(Chain.id != id)))
@@ -204,8 +259,9 @@ def install(app, service, secured):
                     raise HTTPException(422, f"代理端口 {port} 超出允许范围，请填写 {port_range} 内的端口")
                 if port in occupied:
                     raise HTTPException(422, f"代理端口 {port} 已被其他链路使用，请选择其他端口（允许范围 {port_range}）")
-                for k, v in payload.model_dump(exclude={"listen_port"}).items():
-                    setattr(row, k, v)
+                for k in ("name", "enabled", "relay_enabled", "public_host"):
+                    setattr(row, k, getattr(payload, k))
+                row.revision = (row.revision + 1) if id else 1
                 row.listen_port = port
                 if not id:
                     row.username = f"chain_{secrets.token_hex(6)}"
@@ -242,8 +298,7 @@ def install(app, service, secured):
             if kind == "chains":
                 refs = [s.name for s in db.scalars(select(Subscription)) if id in s.chain_ids]
             else:
-                field = Chain.entry_id if kind == "entries" else Chain.exit_id
-                refs = list(db.scalars(select(Chain.name).where(field == id)))
+                refs = [c.name for c in db.scalars(select(Chain)) if referenced(c, kind, id)]
             if refs:
                 raise HTTPException(409, "请先解除关联：" + "、".join(refs))
             db.delete(row)
@@ -251,4 +306,6 @@ def install(app, service, secured):
         return {"ok": True}
 
     # Add after the application's existing routes: generic listing must not intercept /accounts etc.
+    from app.chain_features_api import install_features
+    install_features(app, service, secured, ChainInput, view, save, remove)
     app.include_router(router)

@@ -76,6 +76,7 @@ class Job(Base):
     completed: Mapped[int] = mapped_column(default=0)
     errors: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Source(Base):
@@ -142,8 +143,8 @@ class Chain(Base):
     __tablename__ = "chains"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(80))
-    entry_id: Mapped[str] = mapped_column(ForeignKey("entries.id"))
-    exit_id: Mapped[str] = mapped_column(ForeignKey("exits.id"))
+    entry_id: Mapped[str | None] = mapped_column(ForeignKey("entries.id"), nullable=True)
+    exit_id: Mapped[str | None] = mapped_column(ForeignKey("exits.id"), nullable=True)
     entry_mode: Mapped[str] = mapped_column(String(10), default="auto")
     entry_node_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -152,3 +153,34 @@ class Chain(Base):
     public_host: Mapped[str] = mapped_column(String(253), default="")
     username: Mapped[str] = mapped_column(String(80))
     password_cipher: Mapped[str] = mapped_column(Text)
+    paths: Mapped[list] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    lock_exit: Mapped[bool] = mapped_column(Boolean, default=True)
+    interval: Mapped[int] = mapped_column(Integer, default=300)
+    monitor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ChainTemplate(Base):
+    __tablename__ = "chain_templates"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))
+    config: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ChainSample(Base):
+    __tablename__ = "chain_samples"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    chain_id: Mapped[str] = mapped_column(ForeignKey("chains.id", ondelete="CASCADE"), index=True)
+    tested_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict] = mapped_column(JSON)
+
+
+class ChainEvent(Base):
+    __tablename__ = "chain_events"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    chain_id: Mapped[str] = mapped_column(ForeignKey("chains.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    detail: Mapped[dict] = mapped_column(JSON)

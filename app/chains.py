@@ -1,6 +1,7 @@
-"""Build two-hop graphs and supervise the authenticated relay core."""
+"""Build ordered proxy graphs and supervise the authenticated relay core."""
 import asyncio
 import contextlib
+import copy
 import json
 import os
 import secrets
@@ -16,6 +17,7 @@ from sqlalchemy import select
 from app.mihomo import TEST_URL, binary_path, free_port
 from app.models import Chain, Entry, Exit, Subscription, ProxyCheck
 from app.security import digest
+from app.chain_graph import groups_for, referenced_subscriptions
 
 
 class ChainError(ValueError):
@@ -35,6 +37,9 @@ class ChainManager:
         self.config_file = None
         self.entry_labels = {}
         self.entry_keys = {}
+        self.path_details = {}
+        from app.chain_diagnostics import ChainDiagnostics
+        self.diagnostics = ChainDiagnostics(self)
 
     def host(self, chain):
         return (chain.public_host or self.service.preferences()["proxy_public_host"]
@@ -60,6 +65,9 @@ class ChainManager:
         return result
 
     def build(self, chain):
+        if chain.paths:
+            from app.chain_graph import compile_graph
+            return compile_graph(self, chain)
         with self.service.db() as db:
             entry, exit = db.get(Entry, chain.entry_id), db.get(Exit, chain.exit_id)
         if not chain.enabled or not entry or not exit or not entry.enabled or not exit.enabled:
@@ -80,6 +88,10 @@ class ChainManager:
             proxies.extend([first, last])
             self.entry_labels[last["name"]] = row["proxy"]["name"]
             self.entry_keys[last["name"]] = key
+            from app.service import proxy_key
+            self.path_details[last["name"]] = {"path_index": 0, "path_name": "主路径", "hops": [
+                {"name": row["proxy"]["name"], "type": row["proxy"]["type"], "key": key},
+                {"name": outbound.get("name", exit.name), "type": outbound["type"], "key": proxy_key(outbound)}]}
             terminals.append(last["name"])
         group = {"name": f"链路 · {chain.name} · {chain.id[:8]}",
                  "type": "select" if chain.entry_mode == "fixed" else "url-test", "proxies": terminals}
@@ -90,8 +102,7 @@ class ChainManager:
     async def refresh(self, ids, force=False):
         with self.service.db() as db:
             chains = list(db.scalars(select(Chain).where(Chain.id.in_(ids))))
-            entries = [db.get(Entry, c.entry_id) for c in chains]
-            subs = [db.get(Subscription, e.subscription_id) for e in entries if e]
+            subs = referenced_subscriptions(db, chains)
         accounts = set(i for s in subs if s and s.enabled for i in s.account_ids)
         sources = set(i for s in subs if s and s.enabled for i in s.source_ids)
         if force:
@@ -118,7 +129,7 @@ class ChainManager:
                 if native:
                     nodes, group = self.build(chain)
                     proxies.extend(nodes)
-                    groups.append(group)
+                    groups.extend(groups_for(group))
                     targets.append(group["name"])
                 elif chain.relay_enabled and self.status.get(chain.id, {}).get("state") == "running":
                     name = f"链路 · {chain.name} · {chain.id[:8]}"
@@ -159,12 +170,13 @@ class ChainManager:
                 try:
                     nodes, group = self.build(chain)
                     proxies.extend(nodes)
-                    groups.append(group)
+                    groups.extend(groups_for(group))
                     listeners.append({"name": chain.id, "type": "mixed", "listen": "0.0.0.0",
                                       "port": chain.listen_port, "udp": False, "proxy": group["name"],
                                       "users": [{"username": chain.username,
                                                  "password": self.service.secrets.decrypt(chain.password_cipher)}]})
-                    desired[chain.id] = {"state": "running", "group": group["name"]}
+                    desired[chain.id] = {"state": "running", "group": group["name"],
+                                         "path_errors": group.get("_errors", [])}
                 except ChainError as exc:
                     desired[chain.id] = {"state": "error", "error": str(exc)}
             config = {"mixed-port": 0, "mode": "rule", "log-level": "silent", "ipv6": False,
@@ -225,12 +237,42 @@ class ChainManager:
                 for listener in listeners:
                     self.status[listener["name"]] = {"state": "error", "error": "代理启动失败，请检查内核与端口占用"}
 
+    async def validate_core(self, chain):
+        """Validate a candidate without changing running listeners or selection."""
+        binary = binary_path()
+        if not binary:
+            return  # Native export remains usable without a server core.
+        candidate = copy.copy(chain)
+        candidate.enabled = True
+        compiler = ChainManager(self.service)
+        proxies, group = compiler.build(candidate)
+        with tempfile.TemporaryDirectory(prefix="chain-validate-", dir=self.service.settings.data_dir) as directory:
+            from pathlib import Path
+            file = Path(directory) / "config.yaml"
+            descriptor = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"mixed-port": 0, "proxies": proxies, "proxy-groups": groups_for(group),
+                                "rules": ["MATCH,REJECT"]}, handle)
+            process = await asyncio.create_subprocess_exec(binary, "-t", "-d", directory, "-f", str(file),
+                                                           stdout=asyncio.subprocess.DEVNULL,
+                                                           stderr=asyncio.subprocess.DEVNULL)
+            try:
+                if await asyncio.wait_for(process.wait(), 15):
+                    raise ChainError("Mihomo 配置校验失败，配置未应用")
+            except TimeoutError:
+                raise ChainError("Mihomo 配置校验超时，配置未应用") from None
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+
     async def inspect(self):
         # Never present an old selection as current when the core cannot be queried.
         for status in self.status.values():
             status.pop("current_entry", None)
             status.pop("current_entry_key", None)
             status.pop("latency", None)
+            status.pop("current_path", None)
         if self.process and self.process.returncode is None:
             try:
                 data = (await self._request("/proxies", timeout=2)).get("proxies", {})
@@ -239,11 +281,16 @@ class ChainManager:
                         continue
                     group = data.get(status.get("group"), {})
                     current = group.get("now")
+                    visited = set()
+                    while current and current not in visited and data.get(current, {}).get("now"):
+                        visited.add(current)
+                        current = data[current]["now"]
                     history = data.get(current, {}).get("history", [])
                     delay = history[-1].get("delay") if history else None
                     status.update(current_entry=self.entry_labels.get(current),
                                   current_entry_key=self.entry_keys.get(current),
-                                  latency=delay if delay and delay > 0 else None)
+                                  latency=delay if delay and delay > 0 else None,
+                                  current_path=self.path_details.get(current))
             except (httpx.HTTPError, OSError):
                 pass
         else:
@@ -264,7 +311,7 @@ class ChainManager:
             descriptor = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 yaml.safe_dump({"mixed-port": 0, "external-controller": f"127.0.0.1:{controller}",
-                                "secret": secret, "proxies": proxies, "proxy-groups": [group],
+                                "secret": secret, "proxies": proxies, "proxy-groups": groups_for(group),
                                 "rules": ["MATCH,REJECT"], "log-level": "silent"}, handle)
             process = await asyncio.create_subprocess_exec(binary, "-d", directory, "-f", str(config),
                                                            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -297,6 +344,9 @@ class ChainManager:
     def result_key(self, resource):
         """Fingerprint configuration, independent of transient health and display names."""
         from app.service import proxy_key
+        if isinstance(resource, Chain) and resource.paths:
+            from app.chain_graph import graph_fingerprint
+            return graph_fingerprint(self, resource)
         if isinstance(resource, Exit):
             config = json.loads(self.service.secrets.decrypt(resource.config_cipher))
             for key in ("tls", "skip-cert-verify", "username", "password"):
@@ -340,7 +390,7 @@ class ChainManager:
             return None
 
     def save_result(self, key, result, method):
-        if key:
+        if key and result.get("reachable") is not None:
             with self.service.db.begin() as db:
                 db.merge(ProxyCheck(key=key, reachable=result["reachable"], latency=result["latency"],
                                     method=method, tested_at=result["tested_at"], result=dict(result)))
@@ -351,6 +401,13 @@ class ChainManager:
         cache_key = None
         with self.service.db() as db:
             chain = db.get(Chain, chain_id)
+        if chain and chain.paths:
+            result = await self.diagnostics.measure(chain, timeout=40)
+            self.save_result(self.result_key(chain), result, "chain")
+            if job_id:
+                self.service.progress(job_id, result.get("error"))
+                self.service.finish(job_id)
+            return result
         if chain:
             cache_key = self.result_key(chain)
         try:
@@ -460,6 +517,9 @@ class ChainManager:
                     ids = list(db.scalars(select(Chain.id).where(Chain.enabled.is_(True))))
                 await self.refresh(ids)
                 await self.sync()
+                await self.inspect()
+                if self.service.settings.scheduler_enabled:
+                    await self.diagnostics.tick()
                 delay = min(60, delay * 2) if any(s.get("state") == "error" for s in self.status.values()) else 15
             except Exception:
                 delay = min(60, delay * 2)
@@ -472,4 +532,5 @@ class ChainManager:
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
+        await self.diagnostics.stop()
         await self._stop_process()

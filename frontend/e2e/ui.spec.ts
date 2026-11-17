@@ -50,6 +50,12 @@ async function noOverflow(page: Page) {
 }
 
 test.afterEach(async ({ request }) => {
+  const subs = await (await request.get('/api/v1/subscriptions', { headers })).json()
+  for (const sub of subs) if (sub.name.startsWith(prefix)) {
+    await request.put('/api/v1/subscriptions/' + sub.id, { headers, data: {
+      name: sub.name, account_ids: sub.account_ids, source_ids: sub.source_ids, chain_ids: []
+    } })
+  }
   for (const kind of ['subscriptions', 'chains', 'entries', 'exits', 'subscriptions', 'sources', 'accounts']) {
     const response = await request.get('/api/v1/' + kind, { headers })
     for (const row of await response.json()) {
@@ -188,14 +194,15 @@ test('出口表单保留草稿与密码、连接复制回退、订阅合并链�
   expect(exits.find((e: { id: string }) => e.id === fixture.exit.id)).toMatchObject({ server: 'updated.example.invalid', has_password: true })
 
   await page.getByRole('tab', { name: '链路', exact: true }).click()
-  await page.getByRole('button', { name: '连接信息', exact: true }).click()
-  const connection = page.getByRole('dialog', { name: '代理连接信息' })
+  await page.getByRole('button', { name: fixture.chain.name, exact: true }).click()
+  const connection = page.locator('.chain-drawer')
+  await connection.getByRole('button', { name: '显示连接信息', exact: true }).click()
   await expect(connection).toContainText('••••••••')
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await connection.getByRole('button', { name: '复制地址', exact: true }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/:\d+$/)
   await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }))
-  await connection.getByRole('button', { name: '复制连接信息', exact: true }).click()
+  await connection.getByRole('button', { name: '复制全部', exact: true }).click()
   await expect(connection.getByLabel('手动复制内容', { exact: true })).toHaveValue(/SOCKS5 URI：socks5:\/\//)
   await page.keyboard.press('Escape')
 
@@ -308,7 +315,6 @@ test('弹窗遮罩覆盖视口且配置居中，长表单保留可见操作区',
         { path: '/accounts', tab: '', title: '添加账号' },
         { path: '/chains', tab: '入口', title: '添加入口' },
         { path: '/chains', tab: '出口', title: '添加出口' },
-        { path: '/chains', tab: '链路', title: '添加链路' },
         { path: '/subscriptions', tab: '', title: '创建订阅' },
       ]) {
         await page.goto(item.path)
@@ -383,7 +389,7 @@ test('确认框在宽屏和手机上保持紧凑居中，长名称换行且取�
       ['/subscriptions', '轮换密钥', '轮换订阅密钥'],
       ['/accounts', '删除账号', '删除账号'],
       ['/sources', '删除订阅源', '删除订阅源'],
-      ['/chains', '删除链路', '删除配置'],
+      ['/chains', '删除链路', '删除链路'],
     ]) {
       await page.goto(path!)
       await page.getByRole('button', { name: '更多操作', exact: true }).first().click()
@@ -466,11 +472,14 @@ test('浮层检查：长错误消息在手机上完整换行', async ({ page, re
   await expect(message).toBeVisible()
   const fits = await message.evaluate(el => el.scrollWidth <= el.clientWidth + 1)
   expect.soft(fits).toBeTruthy()
-  const bounds = (await message.boundingBox())!
-  expect(bounds.x).toBeGreaterThanOrEqual(0)
-  expect(bounds.y).toBeGreaterThanOrEqual(0)
-  expect(bounds.x + bounds.width).toBeLessThanOrEqual(320)
-  expect(bounds.y + bounds.height).toBeLessThanOrEqual(640)
+  // Visibility can precede the toast's entrance transition finishing.
+  await expect(async () => {
+    const bounds = (await message.boundingBox())!
+    expect(bounds.x).toBeGreaterThanOrEqual(0)
+    expect(bounds.y).toBeGreaterThanOrEqual(0)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(320)
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(640)
+  }).toPass({ timeout: 2000 })
   await page.screenshot({ path: testInfo.outputPath('long-error-320.png') })
 })
 
@@ -487,11 +496,11 @@ test('出口测速与链路检测在当前页面等待并显示本次结果', as
     await chainGate
     await route.fulfill({ json: { reachable: true, latency: 42, entry: '测试最快入口', error: null, tested_at: Date.now() / 1000 } })
   })
-  await card.getByRole('button', { name: '检测链路', exact: true }).click()
+  await card.getByRole('button', { name: '检测', exact: true }).click()
   await expect(card.getByRole('status')).toContainText('正在检测')
   await expect(card.getByRole('button', { name: '编辑', exact: true })).toBeDisabled()
   finishChain()
-  await expect(card.getByRole('status')).toContainText('最近检测可用 · 42 ms')
+  await expect(card.getByRole('status')).toContainText('42 ms')
   await expect(card.getByRole('status')).toContainText('测试最快入口')
   expect(chainCalls).toBe(1)
   await page.setViewportSize({ width: 320, height: 800 })
@@ -537,11 +546,11 @@ test('链路卡片一键复制连接信息并支持失败后手动复制', async
   const copied = await page.evaluate(() => navigator.clipboard.readText())
   expect(copied).toContain('密码：' + info.password)
   expect(copied).toContain('SOCKS5 URI：socks5://')
-  await expect(page.getByRole('dialog', { name: '代理连接信息' })).not.toBeVisible()
+  await expect(page.locator('.chain-drawer')).not.toBeVisible()
   await expect(card).not.toContainText(info.password)
   await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }))
   await card.getByRole('button', { name: '复制连接信息', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '代理连接信息' })
+  const dialog = page.locator('.chain-drawer')
   await expect(dialog.getByLabel('手动复制内容', { exact: true })).toHaveValue(copied.replace(/\r\n/g, '\n'))
   expect(calls).toBe(2)
   await page.keyboard.press('Escape')
@@ -608,9 +617,9 @@ test('检测结果在刷新页面和重新进入后保持显示', async ({ page,
   await login(page)
   await page.goto('/chains')
   const card = page.locator('.chain-card').filter({ has: page.getByRole('heading', { name: chain.name, exact: true }) })
-  await expect(card.getByRole('status')).toContainText('最近检测失败')
+  await expect(card.getByRole('status')).toContainText('检测失败')
   await page.reload()
-  await expect(card.getByRole('status')).toContainText('最近检测失败')
+  await expect(card.getByRole('status')).toContainText('检测失败')
   await page.getByRole('tab', { name: '出口', exact: true }).click()
   const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: exit.name, exact: true }) })
   await expect(row.getByRole('status')).toContainText('缺少 Mihomo')
@@ -641,7 +650,7 @@ test('入口节点独立弹窗支持测速、排序、错误重试和取消草�
   await login(page)
   await page.goto('/chains')
   await page.getByRole('tab', { name: '入口', exact: true }).click()
-  await page.getByRole('row').filter({ hasText: entry.name }).getByRole('button', { name: '编辑', exact: true }).click()
+  await page.getByRole('row').filter({ has: page.getByRole('cell', { name: entry.name, exact: true }) }).getByRole('button', { name: '编辑', exact: true }).click()
   const form = page.getByRole('dialog', { name: '编辑入口', exact: true })
   await form.getByText('选择候选节点（可多选）', { exact: true }).click()
   await form.getByRole('button', { name: '选择节点', exact: true }).click()
