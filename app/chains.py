@@ -219,6 +219,10 @@ class ChainManager:
                 # Check occupied ports before launch; the controller alone does not prove listeners started.
                 for listener in listeners:
                     with socket.socket() as sock:
+                        # Match Unix listener reuse so closed connections in TIME_WAIT
+                        # do not block a restart; active listeners still reject bind.
+                        if os.name != "nt":
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         sock.bind(("0.0.0.0", listener["port"]))
                 self.process = await asyncio.create_subprocess_exec(binary, "-d", str(directory), "-f", str(self.config_file),
                                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)

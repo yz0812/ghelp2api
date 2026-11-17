@@ -417,3 +417,23 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+def test_real_relay_rejects_occupied_listener(client, monkeypatch):
+    import socket
+
+    binary = (Path('.cache/mihomo/mihomo.exe') if Path('.cache/mihomo/mihomo.exe').exists()
+              else Path('.cache/mihomo/mihomo')).resolve()
+    assert binary.is_file(), '真实监听冲突测试需要固定版本 Mihomo'
+    _, _, _, chain = setup_chain(client)
+    service = client.app.state.service
+    with socket.socket() as occupied:
+        occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        occupied.bind(('0.0.0.0', 0))
+        occupied.listen()
+        with service.db.begin() as db:
+            db.get(Chain, chain['id']).listen_port = occupied.getsockname()[1]
+        monkeypatch.setenv('MIHOMO_BIN', str(binary))
+        client.portal.call(service.chains.sync)
+        assert service.chains.status[chain['id']]['state'] == 'error'
+        assert service.chains.process is None
