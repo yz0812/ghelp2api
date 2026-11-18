@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import ipaddress
 import json
 import re
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -33,7 +34,7 @@ def clean_name(value, fallback):
     return (text or fallback)[:60]
 
 
-def parse_subscription(text: str) -> list[dict]:
+def parse_subscription(text: str, issues: list[str] | None = None) -> list[dict]:
     """自动识别 Clash YAML 或链接列表；无法解析时抛 SubscriptionError。"""
     if not isinstance(text, str) or not text.strip():
         raise SubscriptionError("订阅内容为空")
@@ -41,8 +42,8 @@ def parse_subscription(text: str) -> list[dict]:
         raise SubscriptionError("订阅内容超过大小限制")
     text = text.lstrip("﻿")
     if re.search(r"^proxies\s*:", text, re.M):
-        return parse_clash(text)
-    return parse_links(decode_base64(text))
+        return parse_clash(text, issues)
+    return parse_links(decode_base64(text), issues)
 
 
 def decode_base64(text: str) -> str:
@@ -51,14 +52,14 @@ def decode_base64(text: str) -> str:
     if not compact or "://" in compact:
         return text
     try:
-        raw = base64.b64decode(compact + "=" * (-len(compact) % 4), validate=False)
+        raw = base64.b64decode(compact + "=" * (-len(compact) % 4), altchars=b"-_", validate=True)
         decoded = raw.decode("utf-8")
     except (binascii.Error, UnicodeDecodeError, ValueError):
         return text
     return decoded if "://" in decoded else text
 
 
-def parse_clash(text: str) -> list[dict]:
+def parse_clash(text: str, issues: list[str] | None = None) -> list[dict]:
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError:
@@ -67,11 +68,15 @@ def parse_clash(text: str) -> list[dict]:
     if not isinstance(items, list):
         raise SubscriptionError("Clash 配置里没有 proxies 列表")
     nodes = []
+    if issues is not None and len(items) > MAX_PROXIES:
+        raise SubscriptionError(f"最多支持 {MAX_PROXIES} 个节点")
     for index, item in enumerate(items[:MAX_PROXIES]):
         proxy = sanitize(item, f"节点{index + 1}")
         if proxy:
             nodes.append(proxy)
-    if not nodes:
+        elif issues is not None:
+            issues.append(f"节点 {index + 1}：类型、地址或端口无效")
+    if not nodes and issues is None:
         raise SubscriptionError("订阅里没有支持的节点")
     return nodes
 
@@ -102,32 +107,49 @@ def _valid_server(server: str) -> bool:
         return False
     if server.startswith("[") and server.endswith("]"):  # IPv6 字面量
         return bool(re.fullmatch(r"\[[0-9A-Fa-f:.]+\]", server))
+    if ":" in server:
+        try:
+            ipaddress.IPv6Address(server)
+        except ValueError:
+            return False
+        return True
     return bool(HOST.fullmatch(server))
 
 
-def parse_links(text: str) -> list[dict]:
+def parse_links(text: str, issues: list[str] | None = None) -> list[dict]:
     nodes = []
-    for line in text.splitlines():
+    count = 0
+    for number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
-        if not line or line.startswith("#") or "://" not in line:
+        if not line or line.startswith("#"):
             continue
+        count += 1
+        if issues is not None and count > MAX_PROXIES:
+            raise SubscriptionError(f"最多支持 {MAX_PROXIES} 条输入")
+        reason = "协议不受支持或节点参数无效"
         try:
-            node = parse_link(line)
-        except (ValueError, KeyError, IndexError):
+            node = parse_link(line, strict_vless=issues is not None)
+        except SubscriptionError as exc:
+            node, reason = None, str(exc)
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             node = None
         if node:
             nodes.append(node)
-        if len(nodes) >= MAX_PROXIES:
+        elif issues is not None:
+            issues.append(f"第 {number} 行：{reason}")
+        if issues is None and len(nodes) >= MAX_PROXIES:
             break
-    if not nodes:
+    if not nodes and issues is None:
         raise SubscriptionError("订阅里没有支持的节点")
     return nodes
 
 
-def parse_link(link: str) -> dict | None:
+def parse_link(link: str, *, strict_vless=False) -> dict | None:
     scheme = link.split("://", 1)[0].lower()
+    if scheme == "vless":
+        return parse_vless(link, strict=strict_vless)
     parser = {"ss": parse_ss, "vmess": parse_vmess, "trojan": parse_trojan,
-              "vless": parse_vless, "hysteria2": parse_hysteria2, "hy2": parse_hysteria2}.get(scheme)
+              "hysteria2": parse_hysteria2, "hy2": parse_hysteria2}.get(scheme)
     return parser(link) if parser else None
 
 
@@ -252,7 +274,7 @@ def parse_trojan(link: str) -> dict | None:
     return node
 
 
-def parse_vless(link: str) -> dict | None:
+def parse_vless(link: str, *, strict=False) -> dict | None:
     parts = urlsplit(link)
     uuid = unquote(parts.username or "")
     if not uuid or not parts.hostname or not parts.port:
@@ -261,14 +283,23 @@ def parse_vless(link: str) -> dict | None:
     node = {"name": clean_name(_fragment(link), f"vless-{parts.hostname}"), "type": "vless",
             "server": parts.hostname, "port": parts.port, "uuid": uuid, "udp": True}
     security = str(query.get("security") or "").lower()
+    if strict and security not in {"", "none", "tls", "reality"}:
+        raise SubscriptionError("不支持的 VLESS 安全类型")
+    if strict and query.get("type", "tcp").lower() not in {"", "tcp", "raw", "ws", "grpc"}:
+        raise SubscriptionError("不支持的 VLESS 传输类型")
     if security in {"tls", "reality"}:
         node["tls"] = True
+        if query.get("alpn"):
+            node["alpn"] = [p.strip() for p in query["alpn"].split(",") if p.strip()]
+        if query.get("fp"):
+            node["client-fingerprint"] = query["fp"]
         if query.get("sni") or query.get("host"):
             node["servername"] = query.get("sni") or query.get("host")
     if security == "reality":
         reality = {k: query[v] for k, v in (("public-key", "pbk"), ("short-id", "sid")) if query.get(v)}
-        if query.get("fp"):
-            node["client-fingerprint"] = query["fp"]
+        if strict and "public-key" not in reality:
+            raise SubscriptionError("Reality 缺少公钥 pbk")
+        node.setdefault("client-fingerprint", "chrome")
         if reality:
             node["reality-opts"] = reality
     if query.get("flow"):

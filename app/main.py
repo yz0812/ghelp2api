@@ -14,11 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, func, select, text, update
 
+from app.converter import converted_yaml, converter_router, guard_source, shared_source, subscription_references
 from app.clash import render
 from app.config import APP_VERSION, Settings
 from app.db import make_db
 from app.mihomo import available as mihomo_available
-from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription, Chain, Entry
+from app.models import Account, Job, LoginSession, Node, Preference, Source, Subscription, Chain, Conversion
 from app.regions import label as region_label, describe as describe_region
 from app.schemas import (AccountInput, AccountPatch, ImportInput, LoginInput,
                          PreferencesInput, ProbeInput, SourceContentInput, SourceFileInput,
@@ -70,7 +71,9 @@ def create_app(settings: Settings | None = None):
         # Limit request payloads including chunked bodies before parsing/validation.
         if request.method in {"POST", "PUT", "PATCH"}:
             size, chunks = 0, []
-            limit = MAX_FILE_BODY if request.url.path.startswith("/api/v1/sources/") and request.url.path.endswith("/file") else MAX_BODY
+            path = request.url.path
+            file_input = path.startswith("/api/v1/sources/") and path.endswith("/file")
+            limit = MAX_FILE_BODY if file_input or path.startswith("/api/v1/convert") else MAX_BODY
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > limit:
@@ -79,7 +82,8 @@ def create_app(settings: Settings | None = None):
             request._body = b"".join(chunks)
         response = await call_next(request)
         if (request.method in {"PUT", "PATCH", "POST", "DELETE"} and response.status_code < 400
-                and request.url.path.startswith(("/api/v1/accounts", "/api/v1/sources", "/api/v1/subscriptions"))):
+                and request.url.path.startswith(("/api/v1/accounts", "/api/v1/sources", "/api/v1/subscriptions", "/api/v1/convert/publish",
+                                                 "/api/v1/convert/records", "/api/v1/convert/adopt"))):
             await service.chains.sync()
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -302,7 +306,8 @@ def create_app(settings: Settings | None = None):
     @app.get("/api/v1/subscriptions", dependencies=secured)
     async def subscriptions():
         with db_factory() as db:
-            return [subscription_view(s) for s in db.scalars(select(Subscription))]
+            managed = set(db.scalars(select(Conversion.id)))
+            return [subscription_view(s) | {"converter_id": s.id if s.id in managed else None} for s in db.scalars(select(Subscription))]
 
     def verify_accounts(db, ids):
         existing = set(db.scalars(select(Account.id).where(Account.id.in_(ids))))
@@ -337,11 +342,16 @@ def create_app(settings: Settings | None = None):
             sub = db.get(Subscription, sub_id)
             if not sub:
                 raise HTTPException(404, "订阅不存在")
+            if db.get(Conversion, sub_id):
+                raise HTTPException(409, "请从转换器的在线记录编辑此订阅")
             verify_accounts(db, payload.account_ids)
             verify_sources(db, payload.source_ids)
             if set(db.scalars(select(Chain.id).where(Chain.id.in_(payload.chain_ids)))) != set(payload.chain_ids):
                 raise HTTPException(422, "包含不存在的链路")
-            for k, v in payload.model_dump().items():
+            values = payload.model_dump()
+            if sub.chain_ids and "chain_mode" not in payload.model_fields_set:
+                values["chain_mode"] = sub.chain_mode
+            for k, v in values.items():
                 setattr(sub, k, v)
             view, filtered = subscription_view(sub), (sub.exclude_failed or sub.max_latency
                                                       or sub.max_per_country)
@@ -356,6 +366,8 @@ def create_app(settings: Settings | None = None):
             if not sub:
                 raise HTTPException(404, "订阅不存在")
             key = secrets.token_urlsafe(32)
+            db.execute(update(Conversion).where(Conversion.id == sub_id).values(
+                updated_at=time.time(), version=Conversion.version + 1))
             sub.key_hash, sub.key_cipher = digest(key), vault.encrypt(key)
             return subscription_view(sub)
 
@@ -365,12 +377,17 @@ def create_app(settings: Settings | None = None):
             sub = db.get(Subscription, sub_id)
             if not sub:
                 raise HTTPException(404, "订阅不存在")
-            refs = list(db.scalars(select(Entry.name).where(Entry.subscription_id == sub_id)))
-            from app.chain_graph import referenced
-            refs.extend(c.name for c in db.scalars(select(Chain)) if referenced(c, "subscriptions", sub_id))
+            refs = subscription_references(db, sub_id)
             if refs:
                 raise HTTPException(409, "请先解除入口关联：" + "、".join(refs))
+            record = db.get(Conversion, sub_id)
+            cleanup = record.source_id if record and record.owns_source and not shared_source(db, record) else None
             db.delete(sub)
+            db.flush()
+            if cleanup:
+                db.execute(delete(Source).where(Source.id == cleanup))
+        if cleanup:
+            service.forget_source(cleanup)
         return {"ok": True}
 
     @app.get("/api/v1/subscriptions/{sub_id}/nodes", dependencies=secured)
@@ -424,7 +441,8 @@ def create_app(settings: Settings | None = None):
     @app.get("/api/v1/sources", dependencies=secured)
     async def sources():
         with db_factory() as db:
-            return [source_view(s) for s in db.scalars(select(Source).order_by(Source.created_at))]
+            managed = dict(db.execute(select(Conversion.source_id, Conversion.id)).all())
+            return [source_view(s) | {"converter_id": managed.get(s.id)} for s in db.scalars(select(Source).order_by(Source.created_at))]
 
     @app.post("/api/v1/sources", dependencies=secured, status_code=201)
     async def add_source(payload: SourceInput):
@@ -447,6 +465,8 @@ def create_app(settings: Settings | None = None):
         except SubscriptionError as exc:
             raise HTTPException(422, f"文件无法解析：{exc}") from None
 
+    app.include_router(converter_router(db_factory, vault, subscription_view, secured))
+
     @app.post("/api/v1/sources/file", dependencies=secured, status_code=201)
     async def add_source_file(payload: SourceFileInput):
         """直接导入订阅文件内容（Clash YAML 或链接列表），不需要可访问的订阅地址。"""
@@ -462,6 +482,7 @@ def create_app(settings: Settings | None = None):
     async def replace_source_file(source_id: str, payload: SourceContentInput):
         async with service.lock(f"source:{source_id}"):
             with db_factory.begin() as db:
+                guard_source(db, source_id)
                 source = db.get(Source, source_id)
                 if not source:
                     raise HTTPException(404, "订阅源不存在")
@@ -536,7 +557,7 @@ def create_app(settings: Settings | None = None):
     async def disable_invalid_sources():
         count = 0
         with db_factory.begin() as db:
-            for source in db.scalars(select(Source)):
+            for source in db.scalars(select(Source).where(Source.id.not_in(select(Conversion.source_id)))):
                 if source.enabled and source_invalid(source):
                     source.enabled = False
                     count += 1
@@ -545,7 +566,8 @@ def create_app(settings: Settings | None = None):
     @app.post("/api/v1/sources/invalid/delete", dependencies=secured)
     async def delete_invalid_sources():
         with db_factory.begin() as db:
-            invalid = [s for s in db.scalars(select(Source)) if source_invalid(s)]
+            invalid = [s for s in db.scalars(select(Source).where(Source.id.not_in(select(Conversion.source_id))))
+                       if source_invalid(s)]
             for source in invalid:
                 db.delete(source)
                 detach_source(db, source.id)
@@ -558,6 +580,7 @@ def create_app(settings: Settings | None = None):
     async def edit_source(source_id: str, payload: SourcePatch):
         async with service.lock(f"source:{source_id}"):
             with db_factory.begin() as db:
+                guard_source(db, source_id)
                 source = db.get(Source, source_id)
                 if not source:
                     raise HTTPException(404, "订阅源不存在")
@@ -593,6 +616,7 @@ def create_app(settings: Settings | None = None):
     @app.delete("/api/v1/sources/{source_id}", dependencies=secured)
     async def delete_source(source_id: str):
         with db_factory.begin() as db:
+            guard_source(db, source_id)
             source = db.get(Source, source_id)
             if not source:
                 raise HTTPException(404, "订阅源不存在")
@@ -602,23 +626,25 @@ def create_app(settings: Settings | None = None):
         return {"ok": True}
 
     async def config_response(account_ids, source_ids, full, regions=None, exclude_failed=False,
-                              dedupe=True, max_latency=None, max_per_country=None, chain_ids=(), chain_mode="native"):
+                              dedupe=True, max_latency=None, max_per_country=None, chain_ids=(), chain_mode="relay"):
         proxies, groups = await service.export_proxies(account_ids, source_ids, regions,
                                                        exclude_failed, dedupe, max_latency,
                                                        max_per_country)
         targets = [p["name"] for p in proxies]
-        extra, chain_groups, chain_targets = await service.chains.export(chain_ids, full and chain_mode == "native", exclude_failed, max_latency)
+        extra, chain_groups, chain_targets = await service.chains.export(
+            chain_ids, full and chain_mode == "native", exclude_failed, max_latency, reserved_names=(*targets, *groups))
         proxies.extend(extra)
         targets.extend(chain_targets)
         if not targets:
             raise HTTPException(503, "当前没有可用节点，请检查账号或等待刷新", headers={"Retry-After": "60"})
-        return Response(render(proxies, groups, full=full, chain_groups=chain_groups, targets=targets), media_type="application/yaml",
+        return Response(render(proxies, groups, full=full, chain_groups=chain_groups,
+                               chain_targets=chain_targets, targets=targets), media_type="application/yaml",
                         headers={"Content-Disposition": 'inline; filename="ghelper.yaml"',
                                  "profile-update-interval": "1"})
 
     @app.get("/api/v1/config/clash", dependencies=secured)
     async def direct_config(account_ids: str = "", source_ids: str = "", format: str = "full",
-                            chain_ids: str = "", chain_mode: str = "native",
+                            chain_ids: str = "", chain_mode: str = "relay",
                             dedupe: bool = True, exclude_failed: bool = False,
                             max_latency: int | None = Query(default=None, ge=1, le=10000),
                             max_per_country: int | None = Query(default=None, ge=1, le=500)):
@@ -652,12 +678,21 @@ def create_app(settings: Settings | None = None):
                                                        Subscription.enabled.is_(True)))
             if not sub:
                 raise HTTPException(404, "订阅不存在或已停用")
+            record = db.get(Conversion, sub.id)
+            managed = record and record.template != "legacy"
+            if managed:
+                nodes = db.get(Source, record.source_id).proxies
+                template = record.template
             accounts, sources = sub.account_ids, sub.source_ids
             regions, exclude_failed, dedupe = sub.regions, sub.exclude_failed, sub.dedupe
             max_latency, max_per_country = sub.max_latency, sub.max_per_country
             chain_ids, chain_mode = sub.chain_ids, sub.chain_mode
-        response = await config_response(accounts, sources, filename == "clash.yaml", regions,
-                                         exclude_failed, dedupe, max_latency, max_per_country, chain_ids, chain_mode)
+        if managed:
+            config = await asyncio.to_thread(converted_yaml, nodes, template, filename == "clash.yaml")
+            response = Response(config, media_type="application/yaml", headers={"profile-update-interval": "1"})
+        else:
+            response = await config_response(accounts, sources, filename == "clash.yaml", regions,
+                                             exclude_failed, dedupe, max_latency, max_per_country, chain_ids, chain_mode)
         # Revocation/deletion may happen while a slow refresh is in progress.
         with db_factory() as db:
             if not db.scalar(select(Subscription.id).where(Subscription.key_hash == digest(key),

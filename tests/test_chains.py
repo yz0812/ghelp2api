@@ -69,7 +69,7 @@ def test_system_proxy_host_connection_export_and_precedence(client, monkeypatch)
 
 def test_native_graph_and_provider_fail_closed(client, tmp_path):
     _, _, _, chain = setup_chain(client)
-    sub = client.post('/api/v1/subscriptions', json={"name": "仅链路", "chain_ids": [chain['id']]}).json()
+    sub = client.post('/api/v1/subscriptions', json={"name": "仅链路", "chain_ids": [chain['id']], "chain_mode": "native"}).json()
     response = client.get(sub['clash_url'])
     assert response.status_code == 200, response.text
     config = yaml.safe_load(response.text)
@@ -87,6 +87,38 @@ def test_native_graph_and_provider_fail_closed(client, tmp_path):
         config_file.write_text(yaml.safe_dump(config, allow_unicode=True), encoding='utf-8')
         result = subprocess.run([str(binary), '-t', '-d', str(tmp_path), '-f', str(config_file)], capture_output=True, timeout=20)
         assert result.returncode == 0
+
+
+def test_merge_chain_into_existing_subscription_and_refresh(client, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    sub, _, _, chain = setup_chain(client)
+    manager = client.app.state.service.chains
+    with client.app.state.db.begin() as db:
+        db.get(Subscription, sub['id']).chain_mode = 'native'  # Existing subscription without chains.
+    ordinary = yaml.safe_load(client.get(sub['clash_url']).text)['proxies']
+    payload = {'name': sub['name'], 'source_ids': sub['source_ids'], 'chain_ids': [chain['id']]}
+    endpoint = '/api/v1/subscriptions/' + sub['id']
+    merged = client.put(endpoint, json=payload).json()
+    assert merged['chain_mode'] == 'relay' and merged['clash_url'] == sub['clash_url']
+    monkeypatch.setattr(manager, 'sync', AsyncMock())
+    manager.status[chain['id']] = {'state': 'running'}
+    for url in (sub['clash_url'], sub['proxies_url']):
+        response = client.get(url)
+        assert response.headers['profile-update-interval'] == '1'
+        config = yaml.safe_load(response.text)
+        assert config['proxies'][:-1] == ordinary
+        assert config['proxies'][-1]['name'] == chain['name']
+        assert config['proxies'][-1]['port'] == chain['listen_port']
+        for group in config.get('proxy-groups', [])[:2]:
+            assert group['proxies'].count(chain['name']) == 1
+    with client.app.state.db.begin() as db:
+        db.get(Chain, chain['id']).name = ordinary[0]['name']
+    assert yaml.safe_load(client.get(sub['clash_url']).text)['proxies'][-1]['name'] == ordinary[0]['name'] + ' · 2'
+    manager.status[chain['id']] = {'state': 'error'}
+    assert yaml.safe_load(client.get(sub['clash_url']).text)['proxies'] == ordinary
+    assert client.put(endpoint, json=dict(payload, chain_mode='native')).json()['chain_mode'] == 'native'
+    assert client.put(endpoint, json=payload).json()['chain_mode'] == 'native'
 
 
 def test_secrets_and_references(client):
@@ -134,7 +166,7 @@ def test_fixed_entry_pool_validation_and_native_export(client):
     with service.db.begin() as db:
         source = db.get(Source, sub['source_ids'][0])
         source.proxies = source.proxies + [{"name": "not-selected", "type": "http", "server": "other.example.com", "port": 8080}]
-    export = client.post('/api/v1/subscriptions', json={"name": "多选链路订阅", "chain_ids": [chain['id']]}).json()
+    export = client.post('/api/v1/subscriptions', json={"name": "多选链路订阅", "chain_ids": [chain['id']], "chain_mode": "native"}).json()
     config = yaml.safe_load(client.get(export['clash_url']).text)
     assert len(config['proxies']) == 4
     assert all(node['server'] != 'other.example.com' for node in config['proxies'])
@@ -409,6 +441,8 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
             current = client.get('/api/v1/chains').json()[0]['status']
             assert current['current_entry'].endswith('slow')
             assert current['current_entry_key'] == changed['entry_key']
+            refreshed = yaml.safe_load(client.get(export_sub['clash_url']).text)['proxies']
+            assert refreshed == exported and refreshed[0]['name'] == chain['name']
         disabled = client.put(f"/api/v1/chains/{chain['id']}", json={"name": "停用", "entry_id": entry['id'], "exit_id": exit['id'], "enabled": False})
         assert disabled.status_code == 200, disabled.text
         with pytest.raises(OSError):

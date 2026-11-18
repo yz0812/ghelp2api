@@ -9,8 +9,9 @@ import time
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.clash import converted_proxies
 from app.mihomo import DELAY_TIMEOUT, MihomoTester, MihomoUnavailable, available as mihomo_available
-from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
+from app.models import Account, Conversion, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
 from app.pac import PacError, official_names, parse_pac
 from app.regions import country_label as region_country_label
 from app.regions import detect as detect_country
@@ -340,6 +341,17 @@ class Service:
         return (self._ghelper_rows(list(sub.account_ids), list(sub.regions), now)
                 + self._source_rows(list(sub.source_ids)))
 
+    def _subscription_probe_candidates(self, db, sub, now):
+        record = db.get(Conversion, sub.id)
+        if not record or record.template == "legacy":
+            return self._subscription_rows(sub, now), sub.dedupe
+        source = db.get(Source, record.source_id)
+        rows = [{"proxy": proxy, "group": "全部节点", "origin": f"订阅源 · {source.name}",
+                 "country": detect_country(proxy["name"]), "reachable": None, "latency": None, "tested_at": None}
+                for proxy in converted_proxies(source.proxies, record.template)]
+        # 转换模板保留同配置的多个名称，实际测速仍按指纹合并。
+        return rows, False
+
     def subscription_nodes(self, sub_id):
         """订阅的全部候选节点及最近测速结论，并标出哪些会写入订阅、其余为什么被过滤。
 
@@ -350,8 +362,8 @@ class Service:
             sub = db.get(Subscription, sub_id)
             if not sub:
                 return None
-            rows = self._subscription_rows(sub, now)
-            options = (sub.exclude_failed, sub.max_latency, sub.max_per_country, sub.dedupe)
+            rows, dedupe = self._subscription_probe_candidates(db, sub, now)
+            options = (sub.exclude_failed, sub.max_latency, sub.max_per_country, dedupe)
         exclude_failed, max_latency, max_per_country, dedupe = options
         history = [dict(row) for row in rows]
         self._apply_checks(history, now, history=True)
@@ -423,14 +435,16 @@ class Service:
         now = time.time()
         with self.db() as db:
             sub = db.get(Subscription, sub_id)
-            rows = self._subscription_rows(sub, now) if sub else []
+            if not sub:
+                return None, 0
+            rows, _ = self._subscription_probe_candidates(db, sub, now)
         targets = {}
         for row in rows:
             key = proxy_key(row["proxy"])
             if (keys is None or key in keys) and key not in targets:
                 row["key"] = key
                 targets[key] = row
-        chain_ids = [i for i in (sub.chain_ids if sub else [])
+        chain_ids = [i for i in sub.chain_ids
                      if keys is None or any(r["key"] in keys for r in self.chains.details([i]))]
         for chain_id in chain_ids:
             job_id = self.new_job("chain_probe", 1)

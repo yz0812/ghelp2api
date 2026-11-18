@@ -125,7 +125,7 @@ async function clone(row: Chain) {
 }
 async function generate(row: Chain) {
   await action(async () => {
-    await api('/subscriptions', 'POST', { name: row.name + ' 订阅', chain_ids: [row.id] })
+    await api('/subscriptions', 'POST', { name: row.name + ' 订阅', chain_ids: [row.id], chain_mode: row.relay_enabled ? 'relay' : 'native' })
     await load()
     router.push('/subscriptions')
   })
@@ -185,15 +185,25 @@ async function batch(operation: string) {
   })
 }
 const subscriptionDialog = ref(false), subscriptionId = ref(''), subscriptionName = ref('')
-function openSubscription() { subscriptionId.value = ''; subscriptionName.value = '链路订阅'; subscriptionDialog.value = true }
+const subscriptionMode = ref<'relay' | 'native'>('relay')
+function openSubscription() {
+  subscriptionId.value = ''
+  subscriptionName.value = '链路订阅'
+  subscriptionMode.value = 'relay'
+  subscriptionDialog.value = true
+}
+watch(subscriptionId, id => {
+  const sub = subscriptions.value.find(s => s.id === id)
+  subscriptionMode.value = sub?.chain_ids.length ? sub.chain_mode : 'relay'
+})
 async function saveSubscription() {
   await action(async () => {
     const ids = selected.value
     if (subscriptionId.value) {
       const sub = subscriptions.value.find(s => s.id === subscriptionId.value)!
       const { id, clash_url: _clash, proxies_url: _proxies, last_probe: _probe, ...values } = sub
-      await api('/subscriptions/' + id, 'PUT', { ...values, chain_ids: [...new Set([...sub.chain_ids, ...ids])] })
-    } else await api('/subscriptions', 'POST', { name: subscriptionName.value, chain_ids: ids })
+      await api('/subscriptions/' + id, 'PUT', { ...values, chain_mode: subscriptionMode.value, chain_ids: [...new Set([...sub.chain_ids, ...ids])] })
+    } else await api('/subscriptions', 'POST', { name: subscriptionName.value, chain_mode: subscriptionMode.value, chain_ids: ids })
     subscriptionDialog.value = false; await reload(); ElMessage.success('订阅已保存')
   })
 }
@@ -385,7 +395,7 @@ function addCurrent() { if (tab.value === 'chains') edit(); else editResource(ta
           </li>
         </ul>
       </template>
-      <p class="note">服务器中转提供带认证的 HTTP/SOCKS5 端口，对外域名需指向本服务器并映射端口；订阅分发时完整订阅使用客户端原生多跳。</p>
+      <p class="note">服务器中转按链路策略自动选路，每条链路在订阅中显示为一个节点。对外域名需指向本服务器并映射中转端口。</p>
     </template>
 
     <!-- 入口 / 出口 -->
@@ -477,6 +487,10 @@ function addCurrent() { if (tab.value === 'chains') edit(); else editResource(ta
     <el-form label-position="top">
       <el-form-item label="目标订阅"><el-select v-model="subscriptionId" class="full" placeholder="新建订阅"><el-option value="" label="新建订阅" /><el-option v-for="s in subscriptions" :key="s.id" :value="s.id" :label="s.name" /></el-select></el-form-item>
       <el-form-item v-if="!subscriptionId" label="订阅名称"><el-input v-model="subscriptionName" /></el-form-item>
+      <el-form-item label="完整配置中的链路方式">
+        <el-select v-model="subscriptionMode"><el-option label="服务器中转（每条链路一个节点）" value="relay" /><el-option label="原生链路（客户端选择候选）" value="native" /></el-select>
+        <p v-if="subscriptionMode === 'relay'" class="muted">链路需启用服务器中转，服务器会按各自的策略自动切换。</p>
+      </el-form-item>
       <p class="muted">将 {{ selected.length }} 条链路加入订阅，已有普通节点及其他链路保留。</p>
     </el-form>
     <template #footer><el-button @click="subscriptionDialog = false">取消</el-button><el-button type="primary" :loading="busy" @click="saveSubscription">保存订阅</el-button></template>

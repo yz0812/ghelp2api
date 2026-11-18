@@ -23,7 +23,7 @@ def test_pinned_entry_validation_export_probe_and_invalidation(client, monkeypat
     response = client.put(url, json=payload)
     assert response.status_code == 200, response.text
     assert response.json()['selected_entry'] == selected['name']
-    export = client.post('/api/v1/subscriptions', json={'name': '指定链路', 'chain_ids': [chain['id']]}).json()
+    export = client.post('/api/v1/subscriptions', json={'name': '指定链路', 'chain_ids': [chain['id']], 'chain_mode': 'native'}).json()
     config = yaml.safe_load(client.get(export['clash_url']).text)
     assert len(config['proxies']) == 2
     assert config['proxies'][0]['server'] == selected['server']

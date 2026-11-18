@@ -57,7 +57,7 @@ class Subscription(Base):
     account_ids: Mapped[list] = mapped_column(JSON)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)
     chain_ids: Mapped[list] = mapped_column(JSON, default=list)
-    chain_mode: Mapped[str] = mapped_column(String(10), default="native")
+    chain_mode: Mapped[str] = mapped_column(String(10), default="relay")
     regions: Mapped[list] = mapped_column(JSON, default=list)
     exclude_failed: Mapped[bool] = mapped_column(Boolean, default=False)
     dedupe: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -65,6 +65,19 @@ class Subscription(Base):
     max_per_country: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_probe: Mapped[float | None] = mapped_column(Float, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Conversion(Base):
+    __tablename__ = "conversions"
+    id: Mapped[str] = mapped_column(ForeignKey("subscriptions.id", ondelete="CASCADE"), primary_key=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), unique=True)
+    template: Mapped[str] = mapped_column(String(16))
+    owns_source: Mapped[bool] = mapped_column(Boolean)
+    version: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
+    request_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class Job(Base):

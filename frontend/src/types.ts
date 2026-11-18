@@ -10,6 +10,7 @@ export interface Node {
   latency: number | null; reachable: boolean | null; tested_at: number | null; enabled: boolean; stale: boolean;
 }
 export interface Subscription {
+  converter_id?: string | null;
   chain_ids: string[]; chain_mode: "native" | "relay";
   id: string; name: string; account_ids: string[]; source_ids: string[]; regions: string[];
   exclude_failed: boolean; dedupe: boolean; max_latency: number | null;
@@ -17,6 +18,7 @@ export interface Subscription {
   enabled: boolean; clash_url: string; proxies_url: string;
 }
 export interface Source {
+  converter_id?: string | null;
   id: string; name: string; address: string; kind: 'url' | 'file'; enabled: boolean; node_count: number;
   last_fetch: number | null; last_error: string | null; failures: number; created_at: number;
   invalid: boolean;
@@ -84,4 +86,22 @@ export interface ConnectionInfo {
 }
 export interface MenuAction {
   key: string; label: string; danger?: boolean; disabled?: boolean; divided?: boolean;
+}
+
+export interface ConversionRecord {
+  id: string
+  name: string
+  enabled: boolean
+  node_count: number
+  template: 'basic' | 'enhanced' | 'legacy'
+  version: number
+  created_at: number | null
+  updated_at: number
+}
+
+export interface ConversionDetail extends ConversionRecord {
+  references: string[]
+  clash_url: string
+  proxies_url: string
+  content: string
 }

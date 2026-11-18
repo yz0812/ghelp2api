@@ -32,7 +32,7 @@ class SubscriptionInput(BaseModel):
     account_ids: list[str] = Field(default_factory=list, max_length=100)
     source_ids: list[str] = Field(default_factory=list, max_length=100)
     chain_ids: list[str] = Field(default_factory=list, max_length=100)
-    chain_mode: Literal["native", "relay"] = "native"
+    chain_mode: Literal["native", "relay"] = "relay"
     regions: list[str] = Field(default_factory=list, max_length=100)
     exclude_failed: bool = False
     dedupe: bool = True

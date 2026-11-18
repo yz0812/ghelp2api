@@ -31,7 +31,7 @@ const form = reactive({
   account_ids: [] as string[],
   source_ids: [] as string[],
   chain_ids: [] as string[],
-  chain_mode: "native" as "native" | "relay",
+  chain_mode: "relay" as "native" | "relay",
   regions: [] as string[],
   exclude_failed: false,
   dedupe: true,
@@ -47,7 +47,7 @@ function resetForm(accountId?: string) {
     account_ids: accountId ? [accountId] : accounts.value.filter(a => a.enabled).map(a => a.id),
     source_ids: [],
     chain_ids: [],
-    chain_mode: "native",
+    chain_mode: "relay",
     regions: [],
     exclude_failed: false,
     dedupe: true,
@@ -66,6 +66,7 @@ function create(accountId?: string) {
 function edit(s: Subscription) {
   advanced.value = s.regions.length || s.exclude_failed || !s.dedupe || s.max_latency || s.max_per_country ? ['filters'] : []
   Object.assign(form, { ...s, chain_ids: [...s.chain_ids], account_ids: [...s.account_ids], source_ids: [...s.source_ids], regions: [...s.regions] })
+  if (!s.chain_ids.length) form.chain_mode = 'relay'
   visible.value = true
 }
 
@@ -189,7 +190,8 @@ const conditionText = (s: Subscription) =>
         <span>{{ settings.public_base_url }}/sub/••••••••/clash.yaml</span>
         <el-button text type="primary" @click="copy(s.clash_url)">复制地址</el-button>
       </div>
-      <div class="card-actions">
+      <router-link v-if="s.converter_id" class="text-link" :to="{ name: 'conversion-detail', params: { id: s.converter_id } }">管理转换记录 →</router-link>
+      <div v-else class="card-actions">
         <el-button type="primary" plain :icon="Connection" @click="openDetail(s)">节点详情</el-button>
         <el-button :icon="Refresh" :loading="busy" :disabled="!s.enabled" @click="refresh(s)">刷新订阅</el-button>
         <ActionMenu :disabled="busy" :items="[
@@ -229,7 +231,7 @@ const conditionText = (s: Subscription) =>
         </el-select>
       </el-form-item>
       <el-form-item v-if="form.chain_ids.length" label="完整配置中的链路方式">
-        <el-select v-model="form.chain_mode"><el-option label="原生链路（客户端执行）" value="native" /><el-option label="服务器中转" value="relay" /></el-select>
+        <el-select v-model="form.chain_mode"><el-option label="服务器中转（每条链路一个节点）" value="relay" /><el-option label="原生链路（客户端选择候选）" value="native" /></el-select>
         <p class="muted">仅节点订阅中的链路始终使用服务器中转，需要启用中转端口。</p>
       </el-form-item>
       </section>

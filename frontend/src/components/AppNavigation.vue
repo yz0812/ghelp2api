@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
-import { Connection, Files, Grid, Key, Link, Setting, Share, Tickets } from '@element-plus/icons-vue'
+import { Connection, Files, Grid, Key, Link, Setting, Share, Switch, Tickets } from '@element-plus/icons-vue'
 import { accounts } from '../store'
 defineEmits<{ navigate: [] }>()
 const route = useRoute()
@@ -8,7 +8,7 @@ const current = (name: string) => (route.meta.nav || route.name) === name
 const groups = [
   { label: '', items: [{ name: 'overview', label: '连接总览', icon: Grid }] },
   { label: '资源', items: [{ name: 'accounts', label: '账号管理', icon: Key }, { name: 'nodes', label: '节点列表', icon: Connection }, { name: 'sources', label: '订阅源', icon: Files }] },
-  { label: '连接', items: [{ name: 'chains', label: '链式', icon: Share }, { name: 'subscriptions', label: '订阅管理', icon: Link }] },
+  { label: '连接', items: [{ name: 'chains', label: '链式', icon: Share }, { name: 'subscriptions', label: '订阅管理', icon: Link }, { name: 'converter', label: '订阅转换', icon: Switch }] },
   { label: '系统', items: [{ name: 'jobs', label: '任务记录', icon: Tickets }, { name: 'settings', label: '系统设置', icon: Setting }] }
 ]
 </script>

@@ -165,6 +165,24 @@ test('全部页面在' + theme + '主题与四种宽度下布局正常', async (
 })
 }
 
+test('从链式页面加入已有订阅默认使用单个中转节点', async ({ page, request }) => {
+  const fixture = await seed(request)
+  await login(page)
+  await page.goto('/chains')
+  await page.getByRole('checkbox', { name: '选择 ' + fixture.chain.name, exact: true }).press('Space')
+  await page.getByRole('button', { name: '加入订阅', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '加入订阅' })
+  await dialog.getByRole('combobox', { name: '目标订阅' }).press('Enter')
+  await page.getByRole('option', { name: fixture.subscription.name, exact: true }).click()
+  await expect(dialog).toContainText('服务器中转（每条链路一个节点）')
+  await dialog.getByRole('button', { name: '保存订阅' }).click()
+  await expect(dialog).not.toBeVisible()
+  const subs = await (await request.get('/api/v1/subscriptions', { headers })).json()
+  expect(subs.find((s: { id: string }) => s.id === fixture.subscription.id)).toMatchObject({
+    chain_mode: 'relay', chain_ids: [fixture.chain.id], source_ids: [fixture.source.id], clash_url: fixture.subscription.clash_url
+  })
+})
+
 test('出口表单保留草稿与密码、连接复制回退、订阅合并链路', async ({ page, request, context }) => {
   const fixture = await seed(request)
   await login(page)
@@ -217,7 +235,7 @@ test('出口表单保留草稿与密码、连接复制回退、订阅合并链�
   await subscription.getByRole('button', { name: '保存订阅' }).click()
   await expect(subscription).not.toBeVisible()
   await expect(card).toContainText('1 条链路')
-  await expect(card).toContainText('原生链路')
+  await expect(card).toContainText('服务器中转')
   const subscriptions = await (await request.get('/api/v1/subscriptions', { headers })).json()
   expect(subscriptions.find((s: { id: string }) => s.id === fixture.subscription.id).chain_ids).toEqual([fixture.chain.id])
 })

@@ -44,7 +44,7 @@ def test_ordered_paths_export_version_and_references(client, count):
     values = {"name": "多跳", "paths": [path_for(entry, exit, middle)], "monitor_enabled": False}
     chain = post(client, '/chains', values)
     assert chain['revision'] == 1 and len(chain['paths'][0]['hops']) == count
-    export = post(client, '/subscriptions', {"name": "多跳导出", "chain_ids": [chain['id']]})
+    export = post(client, '/subscriptions', {"name": "多跳导出", "chain_ids": [chain['id']], "chain_mode": "native"})
     config = yaml.safe_load(client.get(export['clash_url']).text)
     assert len(config['proxies']) == count * 2
     names = {n['name'] for n in config['proxies']}
@@ -423,7 +423,7 @@ def test_real_multihop_native_relay_draft_and_failure(client, monkeypatch, proxy
     after = client.get('/api/v1/chains/' + chain['id']).json()
     assert after['revision'] == before['revision'] and after['status']['current_path'] == before['status']['current_path']
     assert not list(service.settings.data_dir.glob('chain-diagnostic-*'))
-    exported = post(client, '/subscriptions', {"name": "原生真实", "chain_ids": [chain['id']]})
+    exported = post(client, '/subscriptions', {"name": "原生真实", "chain_ids": [chain['id']], "chain_mode": "native"})
     config = yaml.safe_load(client.get(exported['clash_url']).text)
     terminal = config['proxy-groups'][0]['proxies'][0]
     graph = config['proxies']

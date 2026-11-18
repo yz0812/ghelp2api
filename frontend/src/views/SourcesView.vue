@@ -237,7 +237,8 @@ async function deleteInvalid() {
         <div v-if="['failed', 'incomplete', 'pending'].includes(s.impact_status)"><dt>影响分析</dt><dd>{{ s.impact_status === 'pending' ? '分析中' : s.impact_status === 'failed' ? '分析失败' : '分析未完成' }}</dd></div>
         <div><dt>连续失败</dt><dd>{{ s.failures }}</dd></div>
       </dl>
-      <div class="card-actions">
+      <router-link v-if="s.converter_id" class="text-link" :to="{ name: 'conversion-detail', params: { id: s.converter_id } }">管理转换记录 →</router-link>
+      <div v-else class="card-actions">
         <el-button v-if="s.kind === 'file'" :loading="busy" @click="reupload(s)">重新上传</el-button>
         <el-button v-else :loading="busy" :disabled="!s.enabled" @click="pull(s)">立即拉取</el-button>
         <el-button @click="reportSource = s">刷新影响<span v-if="s.impacted_chains"> · {{ s.impacted_chains }} 条链路</span></el-button>

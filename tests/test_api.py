@@ -549,3 +549,37 @@ def test_version_comes_from_single_source(client):
 
     assert APP_VERSION == VERSION_FILE.read_text(encoding="utf-8").strip().removeprefix("v")
     assert client.get("/api/v1/settings").json()["version"] == APP_VERSION
+
+
+def test_convert_vless_subscription(client):
+    base = "vless://sample@example.com:443?security=reality&pbk=key&sid=0012&fp=chrome&sni=example.org"
+    content = base + "&flow=xtls-rprx-vision#node\n" + base + "&type=grpc&serviceName=svc#node"
+    response = client.post("/api/v1/convert", json={"content": content})
+    assert response.status_code == 200
+    config = yaml.safe_load(response.text)
+    vision, grpc = config["proxies"]
+    assert vision["flow"] == "xtls-rprx-vision"
+    assert vision["tls"] and vision["servername"] == "example.org"
+    assert vision["reality-opts"] == {"public-key": "key", "short-id": "0012"}
+    assert grpc["network"] == "grpc" and grpc["grpc-opts"]["grpc-service-name"] == "svc"
+    assert vision["name"] != grpc["name"]
+    assert config["proxy-groups"][1]["proxies"] == [vision["name"], grpc["name"]]
+
+
+def test_published_conversion_can_be_fetched_without_login(client):
+    from urllib.parse import urlsplit
+
+    content = "vless://sample@example.com:443?security=reality&pbk=key&sid=0012&flow=xtls-rprx-vision"
+    result = client.post("/api/v1/convert/publish", json={"content": content})
+    assert result.status_code == 201
+    path = urlsplit(result.json()["clash_url"]).path
+    token = client.headers.pop("Authorization")
+    for _ in range(2):
+        response = client.get(path)
+        assert response.status_code == 200
+        proxy = yaml.safe_load(response.text)["proxies"][0]
+        assert proxy["flow"] == "xtls-rprx-vision"
+        assert proxy["reality-opts"]["short-id"] == "0012"
+    client.headers["Authorization"] = token
+    assert client.delete("/api/v1/subscriptions/" + result.json()["id"]).is_success
+    assert client.get(path).status_code == 404

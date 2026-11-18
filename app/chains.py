@@ -115,15 +115,23 @@ class ChainManager:
         else:
             await self.service._refresh_due(list(accounts), list(sources), time.time())
 
-    async def export(self, ids, native, exclude_failed=False, max_latency=None):
+    async def export(self, ids, native, exclude_failed=False, max_latency=None, *, reserved_names=()):
         await self.refresh(ids)
         proxies, groups, targets = [], [], []
         with self.service.db() as db:
-            chains = list(db.scalars(select(Chain).where(Chain.id.in_(ids), Chain.enabled.is_(True))))
+            chains = list(db.scalars(select(Chain).where(Chain.id.in_(ids), Chain.enabled.is_(True)).order_by(Chain.id)))
         if not native and chains:
             await self.sync()
         details = {r["chain_id"]: r for r in self.details(ids)}
+        used = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL", "节点选择", "自动选择", *reserved_names}
         for chain in chains:
+            if not native:
+                name = chain.name
+                suffix = 2
+                while name in used:
+                    name = f"{chain.name} · {suffix}"
+                    suffix += 1
+                used.add(name)
             try:
                 detail = details.get(chain.id, {})
                 if exclude_failed and detail.get("reachable") is False:
@@ -136,7 +144,6 @@ class ChainManager:
                     groups.extend(groups_for(group))
                     targets.append(group["name"])
                 elif chain.relay_enabled and self.status.get(chain.id, {}).get("state") == "running":
-                    name = f"链路 · {chain.name} · {chain.id[:8]}"
                     proxies.append({"name": name, "type": "http", "server": self.host(chain),
                                     "port": chain.listen_port, "username": chain.username,
                                     "password": self.service.secrets.decrypt(chain.password_cipher), "udp": False})
