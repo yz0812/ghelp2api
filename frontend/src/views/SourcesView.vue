@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Files, Plus, Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import SourceImpactDialog from '../components/SourceImpactDialog.vue'
 import ActionMenu from '../components/ActionMenu.vue'
 import FilterBar from '../components/FilterBar.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -13,6 +14,7 @@ import { action, busy, checkingSources, clearError, invalidSources, jobs, load, 
 import { hostOf, time } from '../utils'
 import type { Source } from '../types'
 
+const reportSource = ref<Source | null>(null)
 const visible = ref(false)
 const editVisible = ref(false)
 const fileVisible = ref(false)
@@ -231,11 +233,14 @@ async function deleteInvalid() {
       <dl class="account-details">
         <div><dt>节点数量</dt><dd>{{ s.node_count }}</dd></div>
         <div><dt>{{ s.kind === 'file' ? '导入时间' : '上次拉取' }}</dt><dd>{{ time(s.last_fetch) }}</dd></div>
+        <div v-if="s.impact_time"><dt>最近变更</dt><dd>{{ time(s.impact_time) }}</dd></div>
+        <div v-if="['failed', 'incomplete', 'pending'].includes(s.impact_status)"><dt>影响分析</dt><dd>{{ s.impact_status === 'pending' ? '分析中' : s.impact_status === 'failed' ? '分析失败' : '分析未完成' }}</dd></div>
         <div><dt>连续失败</dt><dd>{{ s.failures }}</dd></div>
       </dl>
       <div class="card-actions">
         <el-button v-if="s.kind === 'file'" :loading="busy" @click="reupload(s)">重新上传</el-button>
         <el-button v-else :loading="busy" :disabled="!s.enabled" @click="pull(s)">立即拉取</el-button>
+        <el-button @click="reportSource = s">刷新影响<span v-if="s.impacted_chains"> · {{ s.impacted_chains }} 条链路</span></el-button>
         <el-button @click="openEdit(s)">编辑</el-button>
         <ActionMenu :disabled="busy" :items="[{ key: 'remove', label: '删除订阅源', danger: true }]" @select="remove(s)" />
       </div>
@@ -247,6 +252,7 @@ async function deleteInvalid() {
     <el-pagination v-model:current-page="page" :page-size="pageSize" :pager-count="5" :total="filtered.length" size="small" background layout="total, prev, pager, next" />
   </div>
 
+  <SourceImpactDialog v-if="reportSource" :source="reportSource" @close="reportSource = null" />
   <input ref="reuploadInput" type="file" accept=".yaml,.yml,.txt,.conf" hidden @change="pickReupload" />
   <div class="note">
     文件导入的订阅源不会自动更新，节点变化后点「重新上传」。检测会重新拉取每个已启用的订阅源（并发 5），最近一次拉取失败的（地址过期、内容为空、没有可解析的节点）记为失效。停用后不再参与订阅生成，重新启用即可恢复。地址只保存在本地并加密存储，列表仅显示域名。

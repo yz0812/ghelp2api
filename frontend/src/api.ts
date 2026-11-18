@@ -1,3 +1,9 @@
+import type { SourceImpact } from './types'
+
+export function getSourceImpact(id: string): Promise<SourceImpact> {
+  return api('/sources/' + id + '/impact')
+}
+
 export let csrf = ''
 export function setCsrf(value: string) { csrf = value }
 

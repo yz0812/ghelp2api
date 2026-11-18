@@ -7,6 +7,7 @@ import socket
 import time
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.mihomo import DELAY_TIMEOUT, MihomoTester, MihomoUnavailable, available as mihomo_available
 from app.models import Account, Job, LoginSession, Node, Preference, ProxyCheck, Source, Subscription
@@ -98,6 +99,7 @@ class Service:
 
     async def start(self):
         with self.db.begin() as db:
+            db.execute(update(Source).where(Source.impact_status == "pending").values(impact_status="incomplete"))
             db.execute(update(Job).where(Job.status.in_(["pending", "running"]))
                        .values(status="interrupted", errors=["服务重启，任务已中断"]))
         await self.chains.start()
@@ -567,6 +569,10 @@ class Service:
             pairs = db.execute(select(Node, Account).join(Account).where(
                 Account.id.in_(account_ids), Account.enabled.is_(True), Account.status != "invalid",
                 Account.last_success >= now - 3600)).all()
+        return self._account_rows(pairs, regions)
+
+    @staticmethod
+    def _account_rows(pairs, regions):
         rows = []
         for node, account in pairs:
             if regions and node.region not in regions:
@@ -592,32 +598,36 @@ class Service:
         with self.db() as db:
             sources = list(db.scalars(select(Source).where(
                 Source.id.in_(source_ids), Source.enabled.is_(True)).order_by(Source.created_at)))
+        return [row for source in sources for row in self._source_proxy_rows(source, source.proxies)]
+
+    @staticmethod
+    def _source_proxy_rows(source, proxies):
         rows = []
-        for source in sources:
-            prefix = clean_name(source.name, "订阅源")
-            for index, stored in enumerate(source.proxies or []):
-                # 缓存可能是旧版解析器写入的：输出前按当前规则再清洗一遍
-                proxy = sanitize(stored, f"节点{index + 1}")
-                if not proxy:
-                    continue
-                country = detect_country(proxy["name"])  # 加源名前缀之后再识别会被源名干扰
-                proxy["name"] = clean_name(f"{prefix}-{proxy['name']}", prefix)
-                rows.append({"proxy": proxy, "group": f"来源 · {prefix}", "origin": f"订阅源 · {source.name}",
-                             "country": country,
-                             "reachable": None, "latency": None, "tested_at": None})
+        prefix = clean_name(source.name, "订阅源")
+        for index, stored in enumerate(proxies or []):
+            # 缓存可能是旧版解析器写入的：输出前按当前规则再清洗一遍
+            proxy = sanitize(stored, f"节点{index + 1}")
+            if not proxy:
+                continue
+            country = detect_country(proxy["name"])  # 加源名前缀之后再识别会被源名干扰
+            proxy["name"] = clean_name(f"{prefix}-{proxy['name']}", prefix)
+            rows.append({"proxy": proxy, "group": f"来源 · {prefix}", "origin": f"订阅源 · {source.name}",
+                         "country": country,
+                         "reachable": None, "latency": None, "tested_at": None})
         return rows
 
-    def _apply_checks(self, rows, now, *, history=False):
+    def _apply_checks(self, rows, now, *, history=False, cached=None, kernel=None):
         """用最新的有效结论填充节点，返回缺少结论、需要探测的 [(上次结论时间, key, 同指纹的行)]。"""
-        kernel = mihomo_available()
+        if kernel is None:
+            kernel = mihomo_available()
         grouped: dict[str, list[dict]] = {}
         for row in rows:
             grouped.setdefault(proxy_key(row["proxy"]), []).append(row)
-        cached = {}
-        if grouped:
+        if cached is None and grouped:
             with self.db() as db:
                 cached = {c.key: c for c in db.scalars(
                     select(ProxyCheck).where(ProxyCheck.key.in_(grouped)))}
+        cached = cached or {}
         todo: list[tuple[float, str, list[dict]]] = []
         for key, group in grouped.items():
             check = cached.get(key)
@@ -845,6 +855,55 @@ class Service:
                 seen[key] = name
         return proxies, groups
 
+    def commit_source_refresh(self, source_id, expected, proxies):
+        """Claim one cache version, freeze its dependencies, then publish only to that version."""
+        from app import source_impact
+        now, version = time.time(), expected + 1
+        with self.db.begin() as db:
+            source = db.get(Source, source_id)
+            if not source or source.refresh_version != expected:
+                return False
+            previous = source.proxies
+            if source.last_fetch is None:
+                status = "baseline"
+            elif previous != proxies:
+                status = "pending"
+            elif source.impact_status in {"failed", "pending", "incomplete"}:
+                status = "incomplete"
+            else:
+                status = "unchanged"
+            claimed = db.execute(update(Source).where(Source.id == source_id, Source.refresh_version == expected)
+                                 .values(proxies=proxies, last_fetch=now, last_attempt=now, last_error=None,
+                                         failures=0, refresh_version=version, impact_status=status))
+            if not claimed.rowcount:
+                return False
+            if status != "pending":
+                return True
+            try:
+                with db.begin_nested():
+                    sample = source_impact.capture(self, db, source_id, previous, now)
+            except Exception:
+                source.impact_status = "failed"
+                return True
+        try:
+            report = source_impact.analyze(self, sample, source_id, previous, proxies, now, version)
+            if any(report[k] for k in ("added", "removed", "subscriptions", "chains")):
+                values = {"impact_report": report, "impact_status": "analyzed", "impact_time": now,
+                          "impacted_chains": len(report["chains"])}
+            else:
+                values = {"impact_status": "unchanged"}
+        except Exception:
+            values = {"impact_status": "failed"}
+        current = update(Source).where(Source.id == source_id, Source.refresh_version == version)
+        try:
+            with self.db.begin() as db:
+                db.execute(current.values(**values))
+        except SQLAlchemyError:
+            # Cache commit already succeeded. A restart also reconciles stranded pending reports.
+            with contextlib.suppress(SQLAlchemyError), self.db.begin() as db:
+                db.execute(current.values(impact_status="incomplete"))
+        return True
+
     async def refresh_source(self, source_id):
         """拉取一个订阅源；失败时保留上次缓存并记录脱敏错误。"""
         async with self.lock(f"source:{source_id}"):
@@ -854,6 +913,7 @@ class Service:
                     return 0, "订阅源不存在或已停用"
                 if source.kind == "file":  # 文件源没有地址可拉，节点只随重新上传更新
                     return len(source.proxies or []), None
+                expected = source.refresh_version
                 try:
                     url = self.secrets.decrypt(source.url_cipher)
                 except Exception:
@@ -868,18 +928,12 @@ class Service:
             except Exception:
                 error = "拉取订阅失败，请检查地址"
             else:
-                with self.db.begin() as db:
-                    row = db.get(Source, source_id)
-                    if not row:  # 拉取期间被删除：丢弃结果，不要把节点写回来
-                        return 0, "订阅源已被删除"
-                    row.proxies, row.last_fetch = proxies, time.time()
-                    row.last_attempt, row.last_error, row.failures = time.time(), None, 0
+                if not await asyncio.to_thread(self.commit_source_refresh, source_id, expected, proxies):
+                    return 0, "订阅源已被删除或更新"
                 return len(proxies), None
             with self.db.begin() as db:
-                row = db.get(Source, source_id)
-                if row:
-                    row.last_attempt = time.time()
-                    row.last_error, row.failures = error, row.failures + 1
+                db.execute(update(Source).where(Source.id == source_id, Source.refresh_version == expected)
+                           .values(last_attempt=time.time(), last_error=error, failures=Source.failures + 1))
             return 0, error
 
     async def source_check_job(self, job_id, ids):

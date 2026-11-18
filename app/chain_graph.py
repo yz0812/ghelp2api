@@ -115,28 +115,34 @@ def resolve_hop(manager, hop):
     return nodes, label
 
 
+def path_candidates(path, hops, *, strict):
+    from app.chains import ChainError
+    for nodes, _ in hops[1:]:
+        if any(n["type"] == "hysteria2" or n.get("network") in {"quic", "kcp"} for _, n in nodes):
+            raise ChainError("后续跳暂不支持依赖 UDP 的传输，请选择 TCP 节点")
+    candidates = hops[0][0]
+    if path["strategy"] == "fallback":
+        available = dict(candidates)
+        if strict and any(k not in available for k in path["ordered_keys"]):
+            raise ChainError("主备顺序中存在已失效的入口节点")
+        candidates = [(k, available[k]) for k in path["ordered_keys"] if k in available]
+    tail = [nodes[0] for nodes, _ in hops[1:]]
+    keys = [key for key, _ in tail]
+    if len(set(keys)) != len(keys):
+        raise ChainError("不同来源引用了同一节点，路径不能重复")
+    candidates = [(key, node) for key, node in candidates if key not in keys]
+    if not candidates:
+        raise ChainError("入口候选失效或与后续节点重复")
+    return candidates, tail
+
+
 def resolve(manager, paths, *, strict=True):
     from app.chains import ChainError
     resolved, errors = [], []
     for index, path in enumerate(paths):
         try:
             hops = [resolve_hop(manager, h) for h in path["hops"]]
-            for nodes, _ in hops[1:]:
-                if any(n["type"] == "hysteria2" or n.get("network") in {"quic", "kcp"} for _, n in nodes):
-                    raise ChainError("后续跳暂不支持依赖 UDP 的传输，请选择 TCP 节点")
-            candidates = hops[0][0]
-            if path["strategy"] == "fallback":
-                available = dict(candidates)
-                if strict and any(k not in available for k in path["ordered_keys"]):
-                    raise ChainError("主备顺序中存在已失效的入口节点")
-                candidates = [(k, available[k]) for k in path["ordered_keys"] if k in available]
-            tail = [nodes[0] for nodes, _ in hops[1:]]
-            keys = [key for key, _ in tail]
-            if len(set(keys)) != len(keys):
-                raise ChainError("不同来源引用了同一节点，路径不能重复")
-            candidates = [(key, node) for key, node in candidates if key not in keys]
-            if not candidates:
-                raise ChainError("入口候选失效或与后续节点重复")
+            candidates, tail = path_candidates(path, hops, strict=strict)
             resolved.append((index, path, candidates, tail, hops))
         except ChainError as exc:
             errors.append({"path_index": index, "error": str(exc)})

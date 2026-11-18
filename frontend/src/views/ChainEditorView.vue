@@ -16,6 +16,7 @@ const route = useRoute(), router = useRouter()
 const id = computed(() => typeof route.params.id === 'string' ? route.params.id : '')
 const entries = ref<Entry[]>([]), proxies = ref<Exit[]>([]), subscriptions = ref<Subscription[]>([]), templates = ref<ChainTemplate[]>([])
 const nodes = reactive<Record<string, SubNode[]>>({}), busy = ref(false), loading = ref(true), error = ref(''), validated = ref(false), attempted = ref(false)
+const locationError = ref('')
 const pathIndex = ref(0), hopIndex = ref(0), picking = ref(false), dragIndex = ref<number | null>(null)
 const diagnostic = ref(false), diagnosticDraft = ref<Record<string, any>>()
 const blankHop = (source: ChainHop['source'] = 'proxy'): ChainHop => ({ source, ref: '', node_key: null })
@@ -180,7 +181,7 @@ async function check() {
   catch (e) { error.value = (e as Error).message } finally { busy.value = false }
 }
 async function save() {
-  if (busy.value || !ready()) return
+  if (loading.value || locationError.value || busy.value || !ready()) return
   busy.value = true; error.value = ''
   try {
     await api('/chains' + (id.value ? '/' + id.value : ''), id.value ? 'PUT' : 'POST', payload())
@@ -260,7 +261,21 @@ onMounted(async () => {
       await useTemplate(route.query.template)
     }
     await warmNodes()
-  } catch (e) { error.value = (e as Error).message } finally { savedForm.value = JSON.stringify(form); loading.value = false }
+    if (route.query.revision !== undefined) {
+      const { revision, path, hop } = route.query
+      const index = (value: unknown) => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : -1
+      const p = index(path), h = index(hop)
+      if (index(revision) !== form.revision || !form.paths[p]?.hops[h]) {
+        locationError.value = '报告定位已过期，链路版本或跳位置已变化。请返回链路列表查看当前配置。'
+      } else {
+        loading.value = false
+        await editHop(p, h)
+      }
+    }
+  } catch (e) {
+    if (route.query.revision !== undefined) locationError.value = '无法定位报告中的链路：' + (e as Error).message
+    else error.value = (e as Error).message
+  } finally { savedForm.value = JSON.stringify(form); loading.value = false }
 })
 </script>
 
@@ -271,7 +286,7 @@ onMounted(async () => {
       <h1>{{ id ? '编辑链路' : '新建链路' }}</h1>
       <span :class="['state-chip', 'is-' + status.tone]" role="status"><i aria-hidden="true" />{{ status.text }}</span>
     </div>
-    <div class="editor-actions">
+    <div v-if="!locationError" class="editor-actions">
       <ActionMenu label="模板操作" :disabled="loading" :items="[{ key: 'template', label: '套用模板', disabled: !templates.length }, { key: 'save-template', label: '保存为模板' }]" @select="onMenu" />
       <el-button :disabled="busy || loading" @click="probe">检测草稿</el-button>
       <el-button :loading="busy" :disabled="loading" @click="check">校验配置</el-button>
@@ -284,6 +299,7 @@ onMounted(async () => {
     <ul><li v-for="(issue, index) in issues" :key="index"><button v-if="issue.path >= 0" type="button" class="text-link" @click="editHop(issue.path, issue.hop)">{{ issue.text }}</button><span v-else>{{ issue.text }}</span></li></ul>
   </div>
   <el-skeleton v-if="loading" :rows="8" animated />
+  <el-alert v-else-if="locationError" :title="locationError" type="warning" :closable="false" show-icon />
   <div v-else class="editor-grid">
     <div class="editor-main">
       <section class="panel editor-basics">

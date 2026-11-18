@@ -12,7 +12,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 
 from app.clash import render
 from app.config import APP_VERSION, Settings
@@ -409,7 +409,17 @@ def create_app(settings: Settings | None = None):
                 "enabled": source.enabled, "node_count": len(source.proxies or []),
                 "last_fetch": source.last_fetch, "last_error": source.last_error,
                 "failures": source.failures, "created_at": source.created_at,
+                "impact_status": source.impact_status,
+                "impact_time": source.impact_time, "impacted_chains": source.impacted_chains,
                 "invalid": source_invalid(source)}
+
+    @app.get("/api/v1/sources/{source_id}/impact", dependencies=secured)
+    async def source_impact(source_id: str):
+        with db_factory() as db:
+            source = db.get(Source, source_id)
+            if not source:
+                raise HTTPException(404, "订阅源不存在")
+            return {"version": source.refresh_version, "status": source.impact_status, "report": source.impact_report}
 
     @app.get("/api/v1/sources", dependencies=secured)
     async def sources():
@@ -443,14 +453,13 @@ def create_app(settings: Settings | None = None):
         proxies, now = parse_file(payload.content), time.time()
         with db_factory.begin() as db:
             source = Source(name=payload.name, kind="file", url_cipher="", proxies=proxies,
-                            last_fetch=now, last_attempt=now)
+                            last_fetch=now, last_attempt=now, refresh_version=1)
             db.add(source)
             db.flush()
             return source_view(source)
 
     @app.put("/api/v1/sources/{source_id}/file", dependencies=secured)
     async def replace_source_file(source_id: str, payload: SourceContentInput):
-        proxies, now = parse_file(payload.content), time.time()
         async with service.lock(f"source:{source_id}"):
             with db_factory.begin() as db:
                 source = db.get(Source, source_id)
@@ -458,8 +467,20 @@ def create_app(settings: Settings | None = None):
                     raise HTTPException(404, "订阅源不存在")
                 if source.kind != "file":
                     raise HTTPException(422, "只有文件导入的订阅源可以重新上传")
-                source.proxies, source.last_fetch, source.last_attempt = proxies, now, now
-                source.last_error, source.failures = None, 0
+                expected = source.refresh_version
+            try:
+                proxies = parse_file(payload.content)
+            except HTTPException as exc:
+                with db_factory.begin() as db:
+                    db.execute(update(Source).where(Source.id == source_id, Source.refresh_version == expected)
+                               .values(last_attempt=time.time(), last_error=exc.detail, failures=Source.failures + 1))
+                raise
+            if not await asyncio.to_thread(service.commit_source_refresh, source_id, expected, proxies):
+                raise HTTPException(409, "订阅源已被删除或更新，请重新加载")
+            with db_factory() as db:
+                source = db.get(Source, source_id)
+                if not source:
+                    raise HTTPException(404, "订阅源不存在")
                 return source_view(source)
 
     @app.post("/api/v1/sources/import", dependencies=secured, status_code=201)
@@ -552,6 +573,9 @@ def create_app(settings: Settings | None = None):
                     except SourceError as exc:
                         raise HTTPException(422, str(exc)) from None
                     # 地址变了：旧节点、错误与退避都属于旧地址，清空后下次生成时立即拉取
+                    source.refresh_version += 1
+                    source.impact_status, source.impact_report = "baseline", None
+                    source.impact_time, source.impacted_chains = None, 0
                     source.proxies, source.last_fetch, source.last_attempt = [], None, None
                     source.last_error, source.failures = None, 0
         return {"ok": True}

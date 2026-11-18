@@ -53,6 +53,10 @@ class ChainManager:
             rows = self.service._subscription_rows(sub, time.time())
             self.service._apply_checks(rows, time.time())
             rows = self.service._filter(rows, sub.exclude_failed, sub.max_latency, sub.max_per_country, sub.dedupe)
+        return self.entry_candidates(entry, rows)
+
+    @staticmethod
+    def entry_candidates(entry, rows):
         from app.service import proxy_key
         seen, result = set(), []
         selected = set(entry.node_keys or ([entry.node_key] if entry.node_key else []))

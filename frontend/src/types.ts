@@ -20,6 +20,20 @@ export interface Source {
   id: string; name: string; address: string; kind: 'url' | 'file'; enabled: boolean; node_count: number;
   last_fetch: number | null; last_error: string | null; failures: number; created_at: number;
   invalid: boolean;
+  impact_status: ImpactStatus; impact_time: number | null; impacted_chains: number;
+}
+export type ImpactStatus = 'baseline' | 'pending' | 'analyzed' | 'unchanged' | 'failed' | 'incomplete'
+export interface SourceImpact {
+  status: ImpactStatus; version: number
+  report: null | {
+    version: number; analyzed_at: number; added: number; removed: number
+    subscriptions: { id: string; enabled: boolean; added: number; removed: number }[]
+    chains: { id: string; enabled: boolean; revision: number; level: string; complete_paths: number; total_paths: number
+      paths: { path_index: number; before: boolean; after: boolean
+        hops: { hop_index: number; reason: string; before: number; after: number }[]
+      }[]
+    }[]
+  }
 }
 export interface SubNode {
   key: string; name: string; type: string; server: string; port: number; group: string; origin: string;
