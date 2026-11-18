@@ -90,7 +90,7 @@ test('文件源刷新后定位失效跳，检测并放弃替换草稿', async ({
   const values = { name: '演练双路径', paths: [path(1), path(0)], lock_exit: false, relay_enabled: false, monitor_enabled: false }
   const chain = await post('/chains', values)
   const chainUrl = '/api/v1/chains/' + chain.id
-  const output = await post('/subscriptions', { name: '演练导出', chain_ids: [chain.id] })
+  const output = await post('/subscriptions', { name: '演练导出', chain_ids: [chain.id], chain_mode: 'native' })
   const writes: string[] = []
   page.on('request', r => { if (r.method() === 'PUT' && r.url().endsWith(chainUrl)) writes.push(r.url()) })
   await page.goto('/sources')
