@@ -53,7 +53,7 @@ async def isolated_core(service, proxies, terminals):
                     if process.returncode is not None:
                         raise ChainError("检测内核拒绝了配置，请检查节点协议及参数")
                     try:
-                        response = await client.get("/version", timeout=1)
+                        response = await client.get("/group/diagnostic-selected", timeout=1)
                         response.raise_for_status()
                         break
                     except httpx.HTTPError:

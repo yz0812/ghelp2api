@@ -150,14 +150,14 @@ npm --prefix frontend run build
 
 CI 会跑 Windows/Linux × Python 3.12/3.14 测试、前端构建与 Playwright 端到端测试、容器启动与数据卷持久化检查，然后构建双架构镜像。
 
-**发版**：工作流只在推送版本标签时触发，日常提交不会构建镜像。版本号只有一个来源——仓库根目录的 `VERSION`，写法与 git tag 完全相同（当前 `v1.4.0`）。后端在启动时读取该文件（`app/config.py`），前端通过 `/api/v1/settings` 拿到的 `version` 显示在侧栏与设置页，因此不需要在代码里再写一遍。
+**发版**：工作流只在推送版本标签时触发，日常提交不会构建镜像。版本号只有一个来源——仓库根目录的 `VERSION`，写法与 git tag 完全相同（当前 `v1.4.1`）。后端在启动时读取该文件（`app/config.py`），前端通过 `/api/v1/settings` 拿到的 `version` 显示在侧栏与设置页，因此不需要在代码里再写一遍。
 
 ```sh
 # 1. 改 VERSION 为目标版本并提交推送
 # 2. 打同名 tag 并推送，触发构建
-git tag v1.4.0 && git push origin v1.4.0
+git tag v1.4.1 && git push origin v1.4.1
 ```
 
-工作流会校验 tag 与 `VERSION` 是否一致，不一致直接失败，避免标签对不上。镜像标签全部由这一个版本号派生：`1.4.0`、`1.4`、`v1.4.0`、`latest`、`sha-<commit>`。也可在 Actions 页面手动触发 `workflow_dispatch`。
+工作流会校验 tag 与 `VERSION` 是否一致，不一致直接失败，避免标签对不上。镜像标签全部由这一个版本号派生：`1.4.1`、`1.4`、`v1.4.1`、`latest`、`sha-<commit>`。也可在 Actions 页面手动触发 `workflow_dispatch`。
 
 不要把 `.env`、数据库、token 导出文件、真实节点 YAML 提交到仓库。反向代理日志记得隐藏 `/sub/` 路径里的密钥。

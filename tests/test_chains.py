@@ -331,6 +331,8 @@ def test_real_relay_two_hops_auth_and_revocation(client, monkeypatch, fixed_pool
             self.send_response(204)
             self.end_headers()
 
+        do_HEAD = do_GET
+
         def log_message(self, *args):
             pass
 

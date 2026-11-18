@@ -239,7 +239,7 @@ class ChainManager:
                                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                 for _ in range(50):
                     try:
-                        await self._request("/version", timeout=1)
+                        await self._request(f"/group/{quote(groups[0]['name'], safe='')}", timeout=1)
                         self.signature = signature
                         return
                     except (httpx.HTTPError, OSError):
@@ -337,7 +337,7 @@ class ChainManager:
                         if process.returncode is not None:
                             raise ChainError("测速内核启动失败，请检查代理配置")
                         try:
-                            response = await client.get(base + "/version", timeout=1)
+                            response = await client.get(base + f"/group/{quote(group['name'], safe='')}", timeout=1)
                             response.raise_for_status()
                             break
                         except httpx.HTTPError:

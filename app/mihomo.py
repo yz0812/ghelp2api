@@ -106,7 +106,7 @@ class MihomoTester:
             if process.returncode is not None:
                 raise MihomoUnavailable("mihomo 启动失败")
             try:
-                status, _ = await self._get(port, "/version", 2)
+                status, _ = await self._get(port, "/proxies/n0", 2)
                 if status == 200:
                     return
             except (OSError, TimeoutError, ValueError):
