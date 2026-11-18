@@ -119,50 +119,122 @@ async function execute(action: 'preview' | 'save' | 'download') {
 
 <template>
   <PageHeading :title="id ? '编辑转换记录' : '新建转换'" subtitle="支持 VLESS Reality、Vision、gRPC，以及节点列表、Base64 和 Clash YAML。">
-    <el-button @click="router.push({ name: 'converter' })">返回在线记录</el-button>
+    <el-button :icon="ArrowLeft" @click="router.push({ name: 'converter' })">返回在线记录</el-button>
   </PageHeading>
-  <el-alert v-if="error" :title="error" type="error" :closable="false" role="alert" />
-  <el-button v-if="conflict" :disabled="busy" @click="reviewLatest">对照最新版本</el-button>
-  <el-button v-if="id && !record && !busy" @click="init">重新加载</el-button>
-  <el-form v-if="!id || record" label-position="top" class="panel editor" :disabled="busy" @submit.prevent="execute('preview')">
-    <el-form-item label="订阅名称" for="conversion-name"><input id="conversion-name" v-model="name" class="name-input" :disabled="busy" maxlength="80" placeholder="例如：手机订阅" /></el-form-item>
-    <el-form-item label="分流模板" for="conversion-template">
-      <el-select id="conversion-template" v-model="template">
-        <el-option label="基础分流" value="basic" /><el-option label="增强分流 · Apple / Google / 广告" value="enhanced" />
-      </el-select>
-      <p v-if="template === 'enhanced'" class="muted">客户端会从外部规则源下载分流规则。</p>
-    </el-form-item>
-    <details v-if="existingYaml"><summary>查看旧订阅当前配置</summary><pre>{{ existingYaml }}</pre></details>
-    <el-form-item label="订阅内容" for="conversion-input">
-      <el-input id="conversion-input" v-model="content" type="textarea" :rows="8" placeholder="每行一个节点链接，或粘贴订阅内容" />
-    </el-form-item>
-    <input ref="filePicker" type="file" hidden accept=".yaml,.yml,.txt,.conf" @change="pick" />
-    <div class="card-actions">
-      <el-button @click="filePicker?.click()">读取本地文件</el-button>
-      <el-button native-type="submit" :disabled="!content.trim()" :loading="busy">预览转换</el-button>
-    </div>
-    <section v-if="result" aria-label="转换结果" class="result">
-      <h2>转换结果</h2>
-      <p>{{ result.count }} 个可用节点 · {{ result.issues.length }} 条无效输入</p>
-      <p v-if="result.changes">新增 {{ result.changes.added }} · 移除 {{ result.changes.removed }} · 修改 {{ result.changes.modified }}</p>
-      <details v-if="result.issues.length" open><summary>解析问题</summary><ul><li v-for="issue in result.issues" :key="issue">{{ issue }}</li></ul></details>
-      <el-checkbox v-if="result.issues.length && result.count" v-model="partial">跳过无效输入，使用已解析的节点</el-checkbox>
-      <details v-if="result.yaml"><summary>查看完整 YAML</summary><pre>{{ result.yaml }}</pre></details>
-      <div v-if="result.count" class="card-actions">
-        <el-button type="primary" :disabled="!canSave || (id && !name.trim())" @click="execute('save')">{{ id ? '保存到原订阅' : '发布在线订阅' }}</el-button>
-        <el-select v-model="format" aria-label="下载格式" style="width: 9rem"><el-option label="完整配置" value="full" /><el-option label="纯节点" value="nodes" /></el-select>
-        <el-button :disabled="!canSave" @click="execute('download')">下载 YAML</el-button>
+  <div v-if="error || conflict || (id && !record && !busy)" class="editor-notice">
+    <el-alert v-if="error" :title="error" type="error" :closable="false" role="alert" />
+    <el-button v-if="conflict" :disabled="busy" @click="reviewLatest">对照最新版本</el-button>
+    <el-button v-if="id && !record && !busy" @click="init">重新加载</el-button>
+  </div>
+  <div v-if="!id || record" class="editor-layout">
+    <el-form label-position="top" class="panel editor" :disabled="busy" @submit.prevent="execute('preview')">
+      <el-form-item label="订阅名称" for="conversion-name">
+        <input id="conversion-name" v-model="name" class="name-input" :disabled="busy" maxlength="80" placeholder="例如：手机订阅" />
+      </el-form-item>
+      <el-form-item label="分流模板">
+        <div class="template-options" role="radiogroup" aria-label="分流模板">
+          <label v-for="item in templates" :key="item.value" class="template-option" :class="{ selected: template === item.value }">
+            <input v-model="template" type="radio" name="conversion-template" :value="item.value" :disabled="busy" />
+            <strong>{{ item.title }}</strong>
+            <span>{{ item.description }}</span>
+          </label>
+        </div>
+      </el-form-item>
+      <details v-if="existingYaml" class="fold"><summary>查看旧订阅当前配置</summary><pre class="config-preview">{{ existingYaml }}</pre></details>
+      <el-form-item label="订阅内容" for="conversion-input">
+        <el-input id="conversion-input" v-model="content" class="content-input" type="textarea" :rows="12" placeholder="每行一个节点链接，或粘贴 Base64 / Clash YAML 订阅内容" />
+      </el-form-item>
+      <input ref="filePicker" type="file" hidden accept=".yaml,.yml,.txt,.conf" @change="pick" />
+      <div class="editor-actions">
+        <el-button :icon="Upload" @click="filePicker?.click()">读取本地文件</el-button>
+        <span class="muted">{{ lineCount ? lineCount + ' 行内容' : '支持 .yaml / .yml / .txt / .conf' }}</span>
+        <el-button type="primary" native-type="submit" :icon="View" :disabled="!content.trim()" :loading="busy">预览转换</el-button>
       </div>
-    </section>
-  </el-form>
+    </el-form>
+    <aside class="panel result" aria-label="转换结果">
+      <h2>转换结果</h2>
+      <div v-if="!result" class="result-empty">
+        <el-icon><View /></el-icon>
+        <p class="muted">粘贴订阅内容并点击「预览转换」，<br />这里会显示可用节点与解析问题。</p>
+      </div>
+      <template v-else>
+        <div class="result-stats">
+          <div><span>可用节点</span><strong>{{ result.count }}</strong></div>
+          <div :class="{ warn: result.issues.length }"><span>无效输入</span><strong>{{ result.issues.length }}</strong></div>
+        </div>
+        <p v-if="result.changes" class="result-changes">新增 {{ result.changes.added }} · 移除 {{ result.changes.removed }} · 修改 {{ result.changes.modified }}</p>
+        <details v-if="result.issues.length" class="fold issues" open>
+          <summary>解析问题</summary>
+          <ul><li v-for="issue in result.issues" :key="issue">{{ issue }}</li></ul>
+        </details>
+        <el-checkbox v-if="result.issues.length && result.count" v-model="partial" :disabled="busy">跳过无效输入，使用已解析的节点</el-checkbox>
+        <details v-if="result.yaml" class="fold"><summary>查看完整 YAML</summary><pre class="config-preview">{{ result.yaml }}</pre></details>
+        <div v-if="result.count" class="result-actions">
+          <el-button type="primary" :icon="Check" :loading="busy" :disabled="!canSave || (!!id && !name.trim())" @click="execute('save')">{{ id ? '保存到原订阅' : '发布在线订阅' }}</el-button>
+          <div class="download-row">
+            <el-select v-model="format" aria-label="下载格式"><el-option label="完整配置" value="full" /><el-option label="纯节点" value="nodes" /></el-select>
+            <el-button :icon="Download" :disabled="!canSave || busy" @click="execute('download')">下载 YAML</el-button>
+          </div>
+        </div>
+      </template>
+    </aside>
+  </div>
 </template>
 
 <style scoped>
-.name-input { width: 100%; padding: .5rem .7rem; box-sizing: border-box; border-radius: 4px; border: 1px solid var(--el-border-color); background: var(--el-fill-color-blank); color: inherit; font: inherit }
-.editor { padding: 1.25rem; max-width: 64rem }
-.result { margin-top: 1.25rem; border-top: 1px solid var(--el-border-color-lighter); padding-top: 1rem }
-.result .card-actions { margin-top: 1rem }
-details { margin: .8rem 0 }
-summary { cursor: pointer }
-pre, ul { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere }
+.editor-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px }
+.editor-notice .el-alert { flex: 1 1 100% }
+.editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start }
+.editor-layout > .panel { margin-bottom: 0 }
+.editor { padding: 24px }
+.name-input { width: 100%; height: 36px; padding: 0 11px; box-sizing: border-box; border-radius: var(--el-border-radius-base); border: 1px solid var(--line); background: var(--surface); color: inherit; font: inherit; font-size: 14px; outline: none; transition: border-color .15s }
+.name-input:hover { border-color: var(--subtle) }
+.name-input:focus { border-color: var(--accent) }
+.name-input::placeholder { color: var(--subtle) }
+.name-input:disabled { background: var(--surface-soft); cursor: not-allowed }
+.template-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100% }
+.template-option { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; line-height: 1.5; transition: border-color .15s, background .15s }
+.template-option:hover { background: var(--surface-soft) }
+.template-option.selected { border-color: var(--accent); background: var(--accent-soft) }
+.template-option:focus-within { outline: 2px solid var(--el-color-primary-light-5); outline-offset: 1px }
+.template-option input { position: absolute; opacity: 0; pointer-events: none }
+.template-option strong { font-size: 13px; font-weight: 600 }
+.template-option.selected strong { color: var(--accent) }
+.template-option span { color: var(--muted); font-size: 12px }
+.content-input :deep(textarea) { font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.7 }
+.editor-actions { display: flex; align-items: center; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line) }
+.editor-actions .muted { flex: 1; font-size: 12px }
+.editor-actions .el-button + .el-button { margin-left: 0 }
+.result { position: sticky; top: 0; padding: 20px }
+.result h2 { padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--line) }
+.result-empty { display: flex; flex-direction: column; align-items: center; padding: 28px 8px; text-align: center }
+.result-empty .el-icon { width: 44px; height: 44px; margin-bottom: 12px; border-radius: 12px; background: var(--surface-soft); color: var(--subtle); font-size: 20px }
+.result-empty p { margin: 0; font-size: 12px; line-height: 1.8 }
+.result-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
+.result-stats > div { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft) }
+.result-stats span { color: var(--muted); font-size: 12px }
+.result-stats strong { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums }
+.result-stats .warn strong { color: var(--warning) }
+.result-changes { margin: 12px 0 0; padding: 8px 12px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: 12px }
+.fold { margin: 12px 0 }
+.fold summary { cursor: pointer; font-size: 13px; color: var(--muted) }
+.fold summary:hover { color: var(--ink) }
+.fold .config-preview { margin-top: 10px; max-height: 24rem; white-space: pre-wrap; overflow-wrap: anywhere }
+.issues ul { max-height: 16rem; overflow: auto; margin: 8px 0 0; padding: 10px 10px 10px 28px; border-radius: 7px; background: var(--warning-soft); color: var(--warning); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere }
+.result-actions { display: grid; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line) }
+.result-actions > .el-button { width: 100% }
+.download-row { display: flex; gap: 8px }
+.download-row .el-select { flex: 1; min-width: 0 }
+.download-row .el-button { margin-left: 0 }
+@media (max-width: 1100px) {
+  .editor-layout { grid-template-columns: 1fr }
+  .result { position: static }
+}
+@media (max-width: 767px) {
+  .editor { padding: 16px }
+  .template-options { grid-template-columns: 1fr }
+  .editor-actions { flex-wrap: wrap }
+  .editor-actions .muted { order: 3; flex-basis: 100% }
+  .name-input { height: 44px }
+}
 </style>

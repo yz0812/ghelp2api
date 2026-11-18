@@ -6,6 +6,7 @@ import { CopyDocument, Download, Edit, FolderAdd, Link, Odometer, Plus } from '@
 import PageHeading from '../components/PageHeading.vue'
 import EmptyState from '../components/EmptyState.vue'
 import AppDialog from '../components/AppDialog.vue'
+import DeleteConversionButton from '../components/DeleteConversionButton.vue'
 import SubscriptionDetailDialog from '../components/SubscriptionDetailDialog.vue'
 import { api } from '../api'
 import { action as refreshStore, load } from '../store'
@@ -42,6 +43,7 @@ watch([search, status, page, retry], async () => {
     if (ticket === serial) {
       rows.value = data.items
       total.value = data.total
+      page.value = Math.min(page.value, Math.max(1, Math.ceil(data.total / 20)))
     }
   } catch (e) {
     if (ticket === serial) error.value = (e as Error).message
@@ -117,6 +119,7 @@ async function adopt(id: string) {
         <el-button size="small" :icon="CopyDocument" :disabled="!row.enabled" @click="useRecord(row, false)">复制链接</el-button>
         <el-button size="small" :icon="Download" :disabled="!row.enabled" @click="useRecord(row, true)">下载 YAML</el-button>
         <el-button size="small" :icon="Edit" @click="router.push({ name: 'conversion-edit', params: { id: row.id } })">编辑</el-button>
+        <DeleteConversionButton size="small" :id="row.id" :name="row.name" @deleted="retry++" />
       </div>
     </article>
     <div v-if="total > 20" class="table-footer">
@@ -175,7 +178,7 @@ async function adopt(id: string) {
 @media (max-width: 900px) {
   .record { flex-wrap: wrap }
   .record-main { flex-basis: calc(100% - 50px) }
-  .record-actions { justify-content: flex-start; padding-left: 50px }
+  .record-actions { justify-content: flex-start; padding-left: 50px; max-width: 100% }
 }
 @media (max-width: 767px) {
   .records .panel-heading { flex-direction: column; align-items: stretch }
