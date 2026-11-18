@@ -177,14 +177,16 @@ def test_large_sample_matches_runtime_without_per_hop_queries(client):
     print(f"1000 nodes, 7 chains: {elapsed:.3f}s, {len(queries)} SELECTs")
 
 
-def test_same_fingerprint_name_changes_country_filter(client):
+def test_same_fingerprint_name_changes_country_filter(client, monkeypatch):
     from app.models import ProxyCheck
     from app.subscription import parse_subscription
 
     raw = {"proxies": [dict(node("a"), name="日本 A"), dict(node("b"), name="美国 B")]}
     source = post(client, "/sources/file", dict(name="geo", content=yaml.safe_dump(raw)))
-    sub = post(client, "/subscriptions", dict(name="limited", max_per_country=1, source_ids=[source["id"]]))
     service = client.app.state.service
+    # Keep the seeded probe results stable while comparing the two country filters.
+    monkeypatch.setattr(service, "schedule_probe", lambda sub_id: None)
+    sub = post(client, "/subscriptions", dict(name="limited", max_per_country=1, source_ids=[source["id"]]))
     with service.db.begin() as db:
         for i, proxy in enumerate(parse_subscription(yaml.safe_dump(raw))):
             db.add(ProxyCheck(key=proxy_key(proxy), reachable=True, latency=i+1, method="http", tested_at=time.time()))
